@@ -9,22 +9,23 @@ env:
   GO_VERSION: '1.24'
   CGO_ENABLED: 0
   VERSION: ${{ github.ref_name }}
-  TRAEFIKER_EMAIL: "traefiker@traefik.io"
+  DEPLOYER_EMAIL: "sebiee@users.noreply.github.com"
   CODENAME: ramequin
 
 jobs:
 
   build-webui:
-    if: github.ref_type == 'tag' && github.repository == 'traefik/traefik'
+    if: github.ref_type == 'tag' && github.repository == 'Sebiee/traefik'
     uses: ./.github/workflows/template-webui.yaml
 
   build:
-    if: github.ref_type == 'tag' && github.repository == 'traefik/traefik'
+    if: github.ref_type == 'tag' && github.repository == 'Sebiee/traefik'
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
-        os: [ linux-amd64, linux-386, linux-arm, linux-arm64, linux-ppc64le, linux-s390x, linux-riscv64, darwin-amd64, darwin-arm64, windows-amd64, windows-arm64, windows-386, freebsd-amd64, freebsd-386, openbsd-amd64, openbsd-386, openbsd-riscv64 ]
+        # os: [ linux-amd64, linux-386, linux-arm, linux-arm64, linux-ppc64le, linux-s390x, linux-riscv64, darwin-amd64, darwin-arm64, windows-amd64, windows-arm64, windows-386, freebsd-amd64, freebsd-386, openbsd-amd64, openbsd-386, openbsd-riscv64 ]
+        os: [ linux-amd64, linux-arm64 ]
     needs:
       - build-webui
 
@@ -81,7 +82,7 @@ jobs:
           retention-days: 1
 
   release:
-    if: github.ref_type == 'tag' && github.repository == 'traefik/traefik'
+    if: github.ref_type == 'tag' && github.repository == 'Sebiee/traefik'
     runs-on: ubuntu-latest
 
     needs:
@@ -105,10 +106,10 @@ jobs:
 
       - name: Retrieve the secret and decode it to a file
         env:
-          TRAEFIKER_RSA: ${{ secrets.TRAEFIKER_RSA }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "${TRAEFIKER_RSA}" | base64 --decode > ~/.ssh/traefiker_rsa
+          echo "${DEPLOY_SSH_KEY}" | base64 --decode > ~/.ssh/deploy_rsa
 
       - name: Download All Artifacts
         uses: actions/download-artifact@v4
@@ -117,20 +118,67 @@ jobs:
           pattern: "*-binaries"
           merge-multiple: true
 
+      - name: List dist contents
+        run: |
+          echo "=== Dist directory structure ==="
+          find dist -type f
+          echo "=== End of listing ==="
+
       - name: Publish Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cat dist/**/*_checksums.txt >> "dist/traefik_${VERSION}_checksums.txt"
-          rm dist/**/*_checksums.txt
+          set -x  # Enable debug output
+
+          # Step 1: Merge all per-platform checksum files into one
+          # Use a temp file to avoid "input file is output file" error
+          MERGED_CHECKSUMS="dist/traefik_${VERSION}_checksums.txt"
+          > "${MERGED_CHECKSUMS}"  # Create empty file
+
+          # Find and merge all per-platform checksum files (they're in subdirectories)
+          for f in dist/*/traefik_*_checksums.txt; do
+            if [ -f "$f" ]; then
+              cat "$f" >> "${MERGED_CHECKSUMS}"
+              rm "$f"
+              echo "Merged and deleted: $f"
+            fi
+          done
+
+          echo "=== Merged checksums content ==="
+          cat "${MERGED_CHECKSUMS}"
+          echo "=== End checksums ==="
+
+          # Step 2: Create source tarball
           tar cfz "dist/traefik-${VERSION}.src.tar.gz" \
             --exclude-vcs \
             --exclude .idea \
             --exclude .github \
             --exclude dist .
-          
-          chown -R "$(id -u)":"$(id -g)" dist/
-          gh release create ${VERSION} ./dist/**/traefik*.{zip,tar.gz} ./dist/traefik*.{tar.gz,txt} --repo traefik/traefik --title ${VERSION} --notes ${VERSION} --latest=false
-          
-          ./script/deploy.sh
 
+          chown -R "$(id -u)":"$(id -g)" dist/
+
+          # Step 3: Show what we're about to upload
+          echo "=== Files to upload ==="
+          find dist -type f
+          echo "=== End files ==="
+
+          # Step 4: Collect release artifacts - only .tar.gz and .txt from dist root, and .tar.gz/.zip from subdirs
+          RELEASE_FILES=""
+
+          # Add the merged checksums and source tarball from dist root
+          RELEASE_FILES="${RELEASE_FILES} ${MERGED_CHECKSUMS}"
+          RELEASE_FILES="${RELEASE_FILES} dist/traefik-${VERSION}.src.tar.gz"
+
+          # Add platform-specific binaries (.tar.gz and .zip) from subdirectories
+          for f in dist/*/traefik_*.tar.gz dist/*/traefik_*.zip; do
+            if [ -f "$f" ]; then
+              RELEASE_FILES="${RELEASE_FILES} $f"
+            fi
+          done
+
+          echo "Release files: ${RELEASE_FILES}"
+
+          # Step 5: Create the release
+          gh release create "${VERSION}" ${RELEASE_FILES} --repo Sebiee/traefik --title "${VERSION}" --notes "${VERSION}" --latest=false
+
+          ./script/deploy.sh

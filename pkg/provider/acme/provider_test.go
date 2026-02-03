@@ -2,6 +2,8 @@ package acme
 
 import (
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -577,6 +579,114 @@ func TestInitAccount(t *testing.T) {
 			assert.NoError(t, err, "Init account in error")
 			assert.Equal(t, test.expectedAccount.Email, actualAccount.Email, "unexpected email account")
 			assert.Equal(t, test.expectedAccount.KeyType, actualAccount.KeyType, "unexpected keyType account")
+		})
+	}
+}
+
+func TestIsKVStoreConnectionError(t *testing.T) {
+	testCases := []struct {
+		desc     string
+		err      error
+		expected bool
+	}{
+		{
+			desc:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+		{
+			desc:     "connection refused",
+			err:      errors.New("dial tcp 127.0.0.1:6379: connection refused"),
+			expected: true,
+		},
+		{
+			desc:     "connection reset by peer",
+			err:      errors.New("read tcp: connection reset by peer"),
+			expected: true,
+		},
+		{
+			desc:     "no such host",
+			err:      errors.New("lookup redis.local: no such host"),
+			expected: true,
+		},
+		{
+			desc:     "network is unreachable",
+			err:      errors.New("dial tcp: network is unreachable"),
+			expected: true,
+		},
+		{
+			desc:     "timeout error",
+			err:      errors.New("context deadline exceeded: timeout"),
+			expected: true,
+		},
+		{
+			desc:     "deadline exceeded",
+			err:      errors.New("context deadline exceeded"),
+			expected: true,
+		},
+		{
+			desc:     "EOF error",
+			err:      errors.New("read tcp: EOF"),
+			expected: true,
+		},
+		{
+			desc:     "broken pipe",
+			err:      errors.New("write tcp: broken pipe"),
+			expected: true,
+		},
+		{
+			desc:     "connection timed out",
+			err:      errors.New("dial tcp: connection timed out"),
+			expected: true,
+		},
+		{
+			desc:     "i/o timeout",
+			err:      errors.New("read tcp: i/o timeout"),
+			expected: true,
+		},
+		{
+			desc:     "dial tcp error",
+			err:      errors.New("dial tcp 10.0.0.1:2379: no route to host"),
+			expected: true,
+		},
+		{
+			desc:     "context canceled",
+			err:      errors.New("operation aborted: context canceled"),
+			expected: true,
+		},
+		{
+			desc:     "lock already held (not a connection error)",
+			err:      errors.New("lock already held by another process"),
+			expected: false,
+		},
+		{
+			desc:     "key not found (not a connection error)",
+			err:      errors.New("key not found"),
+			expected: false,
+		},
+		{
+			desc:     "permission denied (not a connection error)",
+			err:      errors.New("permission denied for key"),
+			expected: false,
+		},
+		{
+			desc:     "case insensitive connection refused",
+			err:      errors.New("Connection Refused"),
+			expected: true,
+		},
+		{
+			desc:     "wrapped connection error",
+			err:      fmt.Errorf("failed to acquire lock: %w", errors.New("dial tcp: connection refused")),
+			expected: true,
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.desc, func(t *testing.T) {
+			t.Parallel()
+
+			result := isKVStoreConnectionError(test.err)
+			assert.Equal(t, test.expected, result, "unexpected result for error: %v", test.err)
 		})
 	}
 }

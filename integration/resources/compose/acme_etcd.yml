@@ -1,0 +1,20 @@
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.14
+    command:
+      - etcd
+      - --listen-client-urls
+      - http://0.0.0.0:2379
+      - --advertise-client-urls
+      - http://0.0.0.0:2380
+
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:2.8.0
+    command:
+      - --dnsserver
+      - host.docker.internal:5053
+    environment:
+      # https://github.com/letsencrypt/pebble#testing-at-full-speed
+      PEBBLE_VA_NOSLEEP: 1
+      # https://github.com/letsencrypt/pebble#invalid-anti-replay-nonce-errors
+      PEBBLE_WFE_NONCEREJECT: 0

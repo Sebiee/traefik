@@ -419,7 +419,24 @@ func (c *Configuration) ValidateConfiguration() error {
 			continue
 		}
 
-		if len(resolver.ACME.Storage) == 0 {
+		// Count configured KV stores to ensure mutual exclusivity
+		kvStoreCount := 0
+		if resolver.ACME.Redis != nil {
+			kvStoreCount++
+		}
+		if resolver.ACME.Consul != nil {
+			kvStoreCount++
+		}
+		if resolver.ACME.Etcd != nil {
+			kvStoreCount++
+		}
+
+		if kvStoreCount > 1 {
+			return fmt.Errorf("unable to initialize certificates resolver %q: only one distributed store (redis, consul, etcd) can be configured at a time", name)
+		}
+
+		// Only require storage path if no KV store is configured
+		if kvStoreCount == 0 && len(resolver.ACME.Storage) == 0 {
 			return fmt.Errorf("unable to initialize certificates resolver %q with no storage location for the certificates", name)
 		}
 	}
