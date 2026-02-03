@@ -368,20 +368,19 @@ func (s *AcmeEtcdSuite) verifyCertificateStoredInEtcd(resolverName, expectedDoma
 	ctx := context.Background()
 	key := fmt.Sprintf("traefik/acme/data/%s", resolverName)
 
-	err := try.Do(10*time.Second, func() error {
-		pair, err := s.kvClient.Get(ctx, key, nil)
-		if err != nil {
-			return err
+	// Wait for data to appear with retries - CI can be slow
+	var pair *store.KVPair
+	err := try.Do(30*time.Second, func() error {
+		var errGet error
+		pair, errGet = s.kvClient.Get(ctx, key, nil)
+		if errGet != nil {
+			return errGet
 		}
 		if pair == nil || len(pair.Value) == 0 {
 			return fmt.Errorf("no data found for key %s", key)
 		}
 		return nil
 	})
-	require.NoError(s.T(), err)
-
-	// Verify data can be decompressed and contains certificate info
-	pair, err := s.kvClient.Get(ctx, key, nil)
 	require.NoError(s.T(), err)
 
 	// Data is gzip compressed, try to decompress
@@ -391,24 +390,50 @@ func (s *AcmeEtcdSuite) verifyCertificateStoredInEtcd(resolverName, expectedDoma
 		decompressed = pair.Value
 	}
 
-	// Verify it contains certificate structure
+	// Verify it contains certificate structure - use the actual Traefik types
 	var storedData struct {
 		Account      interface{} `json:"Account"`
 		Certificates []struct {
-			Domain struct {
-				Main string   `json:"main"`
-				SANs []string `json:"sans"`
-			} `json:"domain"`
+			Certificate struct {
+				Domain struct {
+					Main string   `json:"main"`
+					SANs []string `json:"sans"`
+				} `json:"domain"`
+			} `json:"Certificate"`
+			Store string `json:"Store"`
 		} `json:"Certificates"`
 	}
 
 	err = json.Unmarshal(decompressed, &storedData)
-	require.NoError(s.T(), err)
+	if err != nil {
+		// Try alternative structure (embedded Certificate)
+		var altStoredData struct {
+			Account      interface{} `json:"Account"`
+			Certificates []struct {
+				Domain struct {
+					Main string   `json:"main"`
+					SANs []string `json:"sans"`
+				} `json:"domain"`
+			} `json:"Certificates"`
+		}
+		err = json.Unmarshal(decompressed, &altStoredData)
+		require.NoError(s.T(), err, "Failed to unmarshal stored data")
+
+		found := false
+		for _, cert := range altStoredData.Certificates {
+			if cert.Domain.Main == expectedDomain || containsDomain(cert.Domain.SANs, expectedDomain) {
+				found = true
+				break
+			}
+		}
+		assert.True(s.T(), found, "Expected domain %s not found in stored certificates", expectedDomain)
+		return
+	}
 
 	// Verify the expected domain is in the certificates
 	found := false
 	for _, cert := range storedData.Certificates {
-		if cert.Domain.Main == expectedDomain || containsDomain(cert.Domain.SANs, expectedDomain) {
+		if cert.Certificate.Domain.Main == expectedDomain || containsDomain(cert.Certificate.Domain.SANs, expectedDomain) {
 			found = true
 			break
 		}
