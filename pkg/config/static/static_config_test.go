@@ -282,3 +282,310 @@ func TestConfiguration_SetEffectiveConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestConfiguration_ValidateConfiguration_ACMEKVStores(t *testing.T) {
+	testCases := []struct {
+		desc        string
+		conf        *Configuration
+		expectedErr string
+	}{
+		{
+			desc: "No resolver configured",
+			conf: &Configuration{
+				Providers: &Providers{},
+			},
+			expectedErr: "",
+		},
+		{
+			desc: "ACME with storage path only (valid)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME: &acme.Configuration{
+							Storage: "/path/to/acme.json",
+						},
+					},
+				},
+			},
+			expectedErr: "",
+		},
+		{
+			desc: "ACME with Redis only (valid)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME: &acme.Configuration{
+							Redis: &acme.RedisStoreConfig{
+								Endpoints: []string{"localhost:6379"},
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "",
+		},
+		{
+			desc: "ACME with Consul only (valid)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME: &acme.Configuration{
+							Consul: &acme.ConsulStoreConfig{
+								Endpoints: []string{"localhost:8500"},
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "",
+		},
+		{
+			desc: "ACME with Etcd only (valid)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME: &acme.Configuration{
+							Etcd: &acme.EtcdStoreConfig{
+								Endpoints: []string{"localhost:2379"},
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "",
+		},
+		{
+			desc: "ACME with Redis and Consul (mutually exclusive error)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME: &acme.Configuration{
+							Redis: &acme.RedisStoreConfig{
+								Endpoints: []string{"localhost:6379"},
+							},
+							Consul: &acme.ConsulStoreConfig{
+								Endpoints: []string{"localhost:8500"},
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "only one distributed store (redis, consul, etcd) can be configured at a time",
+		},
+		{
+			desc: "ACME with Redis and Etcd (mutually exclusive error)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME: &acme.Configuration{
+							Redis: &acme.RedisStoreConfig{
+								Endpoints: []string{"localhost:6379"},
+							},
+							Etcd: &acme.EtcdStoreConfig{
+								Endpoints: []string{"localhost:2379"},
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "only one distributed store (redis, consul, etcd) can be configured at a time",
+		},
+		{
+			desc: "ACME with Consul and Etcd (mutually exclusive error)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME: &acme.Configuration{
+							Consul: &acme.ConsulStoreConfig{
+								Endpoints: []string{"localhost:8500"},
+							},
+							Etcd: &acme.EtcdStoreConfig{
+								Endpoints: []string{"localhost:2379"},
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "only one distributed store (redis, consul, etcd) can be configured at a time",
+		},
+		{
+			desc: "ACME with all three KV stores (mutually exclusive error)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME: &acme.Configuration{
+							Redis: &acme.RedisStoreConfig{
+								Endpoints: []string{"localhost:6379"},
+							},
+							Consul: &acme.ConsulStoreConfig{
+								Endpoints: []string{"localhost:8500"},
+							},
+							Etcd: &acme.EtcdStoreConfig{
+								Endpoints: []string{"localhost:2379"},
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "only one distributed store (redis, consul, etcd) can be configured at a time",
+		},
+		{
+			desc: "ACME with no storage and no KV store (error)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME: &acme.Configuration{
+							Storage: "",
+						},
+					},
+				},
+			},
+			expectedErr: "with no storage location for the certificates",
+		},
+		{
+			desc: "ACME with KV store and empty storage (valid - storage not required)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME: &acme.Configuration{
+							Storage: "",
+							Redis: &acme.RedisStoreConfig{
+								Endpoints: []string{"localhost:6379"},
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "",
+		},
+		{
+			desc: "Multiple resolvers - one valid, one with error",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"valid-resolver": {
+						ACME: &acme.Configuration{
+							Storage: "/path/to/acme.json",
+						},
+					},
+					"invalid-resolver": {
+						ACME: &acme.Configuration{
+							Redis: &acme.RedisStoreConfig{
+								Endpoints: []string{"localhost:6379"},
+							},
+							Consul: &acme.ConsulStoreConfig{
+								Endpoints: []string{"localhost:8500"},
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "only one distributed store (redis, consul, etcd) can be configured at a time",
+		},
+		{
+			desc: "ACME and Tailscale mutually exclusive",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME:      &acme.Configuration{},
+						Tailscale: &struct{}{},
+					},
+				},
+			},
+			expectedErr: "ACME and Tailscale providers are mutually exclusive",
+		},
+		{
+			desc: "Tailscale only (valid)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						Tailscale: &struct{}{},
+					},
+				},
+			},
+			expectedErr: "",
+		},
+		{
+			desc: "ACME with KV store and storage both set (valid - KV takes precedence)",
+			conf: &Configuration{
+				Providers: &Providers{},
+				CertificatesResolvers: map[string]CertificateResolver{
+					"myresolver": {
+						ACME: &acme.Configuration{
+							Storage: "/path/to/acme.json",
+							Redis: &acme.RedisStoreConfig{
+								Endpoints: []string{"localhost:6379"},
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "",
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.desc, func(t *testing.T) {
+			t.Parallel()
+
+			err := test.conf.ValidateConfiguration()
+
+			if test.expectedErr == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), test.expectedErr)
+			}
+		})
+	}
+}
+
+func TestConfiguration_ValidateConfiguration_MultipleResolvers(t *testing.T) {
+	// Test that multiple resolvers can each have different KV store configurations
+	conf := &Configuration{
+		Providers: &Providers{},
+		CertificatesResolvers: map[string]CertificateResolver{
+			"redis-resolver": {
+				ACME: &acme.Configuration{
+					Redis: &acme.RedisStoreConfig{
+						Endpoints: []string{"localhost:6379"},
+					},
+				},
+			},
+			"consul-resolver": {
+				ACME: &acme.Configuration{
+					Consul: &acme.ConsulStoreConfig{
+						Endpoints: []string{"localhost:8500"},
+					},
+				},
+			},
+			"etcd-resolver": {
+				ACME: &acme.Configuration{
+					Etcd: &acme.EtcdStoreConfig{
+						Endpoints: []string{"localhost:2379"},
+					},
+				},
+			},
+			"file-resolver": {
+				ACME: &acme.Configuration{
+					Storage: "/path/to/acme.json",
+				},
+			},
+		},
+	}
+
+	err := conf.ValidateConfiguration()
+	assert.NoError(t, err, "Each resolver can have a different KV store or file storage")
+}

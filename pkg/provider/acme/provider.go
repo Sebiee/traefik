@@ -48,7 +48,7 @@ type Configuration struct {
 	Profile              string   `description:"Certificate profile to use." json:"profile,omitempty" toml:"profile,omitempty" yaml:"profile,omitempty" export:"true"`
 	EmailAddresses       []string `description:"CSR email addresses to use." json:"emailAddresses,omitempty" toml:"emailAddresses,omitempty" yaml:"emailAddresses,omitempty"`
 	DisableCommonName    bool     `description:"Disable the common name in the CSR." json:"disableCommonName,omitempty" toml:"disableCommonName,omitempty" yaml:"disableCommonName,omitempty" export:"true"`
-	Storage              string   `description:"Storage to use." json:"storage,omitempty" toml:"storage,omitempty" yaml:"storage,omitempty" export:"true"`
+	Storage              string   `description:"Storage to use (file path or empty if using kvStore)." json:"storage,omitempty" toml:"storage,omitempty" yaml:"storage,omitempty" export:"true"`
 	KeyType              string   `description:"KeyType used for generating certificate private key. Allow value 'EC256', 'EC384', 'RSA2048', 'RSA4096', 'RSA8192'." json:"keyType,omitempty" toml:"keyType,omitempty" yaml:"keyType,omitempty" export:"true"`
 	EAB                  *EAB     `description:"External Account Binding to use." json:"eab,omitempty" toml:"eab,omitempty" yaml:"eab,omitempty"`
 	CertificatesDuration int      `description:"Certificates' duration in hours." json:"certificatesDuration,omitempty" toml:"certificatesDuration,omitempty" yaml:"certificatesDuration,omitempty" export:"true"`
@@ -63,6 +63,12 @@ type Configuration struct {
 	DNSChallenge  *DNSChallenge  `description:"Activate DNS-01 Challenge." json:"dnsChallenge,omitempty" toml:"dnsChallenge,omitempty" yaml:"dnsChallenge,omitempty" label:"allowEmpty" file:"allowEmpty" export:"true"`
 	HTTPChallenge *HTTPChallenge `description:"Activate HTTP-01 Challenge." json:"httpChallenge,omitempty" toml:"httpChallenge,omitempty" yaml:"httpChallenge,omitempty" label:"allowEmpty" file:"allowEmpty" export:"true"`
 	TLSChallenge  *TLSChallenge  `description:"Activate TLS-ALPN-01 Challenge." json:"tlsChallenge,omitempty" toml:"tlsChallenge,omitempty" yaml:"tlsChallenge,omitempty" label:"allowEmpty" file:"allowEmpty" export:"true"`
+
+	// Distributed storage options for running multiple Traefik replicas.
+	// When using a KV store, the 'storage' option is ignored.
+	Redis  *RedisStoreConfig  `description:"Use Redis for distributed ACME certificate storage." json:"redis,omitempty" toml:"redis,omitempty" yaml:"redis,omitempty" label:"allowEmpty" file:"allowEmpty" export:"true"`
+	Consul *ConsulStoreConfig `description:"Use Consul for distributed ACME certificate storage." json:"consul,omitempty" toml:"consul,omitempty" yaml:"consul,omitempty" label:"allowEmpty" file:"allowEmpty" export:"true"`
+	Etcd   *EtcdStoreConfig   `description:"Use etcd for distributed ACME certificate storage." json:"etcd,omitempty" toml:"etcd,omitempty" yaml:"etcd,omitempty" label:"allowEmpty" file:"allowEmpty" export:"true"`
 }
 
 // SetDefaults sets the default values.
@@ -166,7 +172,8 @@ func (p *Provider) ListenConfiguration(config dynamic.Configuration) {
 func (p *Provider) Init() error {
 	logger := log.With().Str(logs.ProviderName, p.ResolverName+resolverSuffix).Logger()
 
-	if len(p.Configuration.Storage) == 0 {
+	// Storage path is only required if not using a distributed KV store
+	if len(p.Configuration.Storage) == 0 && p.Configuration.Redis == nil && p.Configuration.Consul == nil && p.Configuration.Etcd == nil {
 		return errors.New("unable to initialize ACME provider with no storage location for the certificates")
 	}
 
@@ -720,9 +727,71 @@ func (p *Provider) resolveCertificate(ctx context.Context, domain types.Domain, 
 		return types.Domain{}, nil, nil
 	}
 
+	logger := log.Ctx(ctx)
+
+	// If using distributed store, try to acquire distributed lock
+	// This prevents multiple replicas from simultaneously requesting the same certificate
+	usingDistributedLock := false
+	var distStore DistributedStore
+	var domainKey string
+	if ds, ok := p.Store.(DistributedStore); ok {
+		distStore = ds
+		domainKey = strings.Join(uncheckedDomains, ",")
+
+		// Use a short timeout context for lock acquisition
+		lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err := distStore.AcquireLock(lockCtx, domainKey)
+		cancel()
+
+		if err != nil {
+			// Check if this is a connection error vs lock contention
+			if isKVStoreConnectionError(err) {
+				// KV store is unreachable - proceed with local-only mode
+				// This prevents Redis becoming a SPOF
+				logger.Warn().Err(err).Msgf("KV store unreachable, proceeding with local-only certificate resolution for %v", uncheckedDomains)
+				// Continue without distributed lock
+			} else {
+				// Lock is held by another replica - skip to avoid duplicate requests
+				logger.Info().Err(err).Msgf("Another replica is handling certificate for %v, skipping", uncheckedDomains)
+				p.removeResolvingDomains(uncheckedDomains)
+				return types.Domain{}, nil, nil
+			}
+		} else {
+			usingDistributedLock = true
+		}
+	}
+	if usingDistributedLock {
+		defer func() {
+			if err := distStore.ReleaseLock(domainKey); err != nil {
+				logger.Warn().Err(err).Msg("Failed to release distributed lock")
+			}
+		}()
+
+		// After acquiring lock, check again if certificate was obtained by another replica
+		freshCerts, err := p.Store.GetCertificates(p.ResolverName)
+		if err == nil {
+			for _, cert := range freshCerts {
+				certDomains := cert.Domain.ToStrArray()
+				for _, d := range uncheckedDomains {
+					for _, cd := range certDomains {
+						if d == cd {
+							logger.Info().Msgf("Certificate for %s was obtained by another replica, skipping", d)
+							p.removeResolvingDomains(uncheckedDomains)
+							// Refresh local certificates
+							p.certificatesMu.Lock()
+							p.certificates = freshCerts
+							p.certificatesMu.Unlock()
+							p.configurationChan <- p.buildMessage()
+							return types.Domain{}, nil, nil
+						}
+					}
+				}
+			}
+		}
+	}
+
 	defer p.removeResolvingDomains(uncheckedDomains)
 
-	logger := log.Ctx(ctx)
 	logger.Debug().Msgf("Loading ACME certificates %+v...", uncheckedDomains)
 
 	client, err := p.getClient()
@@ -766,6 +835,41 @@ func (p *Provider) removeResolvingDomains(resolvingDomains []string) {
 	for _, domain := range resolvingDomains {
 		delete(p.resolvingDomains, domain)
 	}
+}
+
+// isKVStoreConnectionError checks if an error indicates the KV store is unreachable.
+// This helps distinguish between "lock held by another replica" (should skip)
+// and "KV store down" (should proceed with local-only mode).
+func isKVStoreConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	// Common connection error patterns
+	connectionErrors := []string{
+		"connection refused",
+		"connection reset",
+		"no such host",
+		"network is unreachable",
+		"timeout",
+		"deadline exceeded",
+		"EOF",
+		"broken pipe",
+		"connection timed out",
+		"i/o timeout",
+		"dial tcp",
+		"context canceled",
+	}
+
+	for _, pattern := range connectionErrors {
+		if strings.Contains(strings.ToLower(errStr), strings.ToLower(pattern)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (p *Provider) addCertificateForDomain(domain types.Domain, crt *certificate.Resource, tlsStore string) error {
