@@ -73,6 +73,7 @@ func TestDecompress_InvalidData(t *testing.T) {
 // MockLocker is a mock implementation of store.Locker for testing.
 type MockLocker struct {
 	mock.Mock
+
 	lockChan chan struct{}
 }
 
@@ -194,8 +195,7 @@ func TestKVStore_AcquireLock_Success(t *testing.T) {
 		locks:       make(map[string]store.Locker),
 	}
 
-	ctx := context.Background()
-	locker, err := kvStore.AcquireLock(ctx, "example.com")
+	locker, err := kvStore.AcquireLock(t.Context(), "example.com")
 
 	require.NoError(t, err)
 	assert.NotNil(t, locker)
@@ -217,8 +217,7 @@ func TestKVStore_AcquireLock_Failure(t *testing.T) {
 		locks:       make(map[string]store.Locker),
 	}
 
-	ctx := context.Background()
-	locker, err := kvStore.AcquireLock(ctx, "example.com")
+	locker, err := kvStore.AcquireLock(t.Context(), "example.com")
 
 	require.Error(t, err)
 	assert.Nil(t, locker)
@@ -241,8 +240,7 @@ func TestKVStore_AcquireLock_LockContention(t *testing.T) {
 		locks:       make(map[string]store.Locker),
 	}
 
-	ctx := context.Background()
-	locker, err := kvStore.AcquireLock(ctx, "example.com")
+	locker, err := kvStore.AcquireLock(t.Context(), "example.com")
 
 	require.Error(t, err)
 	assert.Nil(t, locker)
@@ -360,10 +358,7 @@ func TestKVStore_LockTimeout_Configuration(t *testing.T) {
 	for _, test := range testCases {
 		t.Run(test.desc, func(t *testing.T) {
 			kvStore := &KVStore{
-				prefix:      "test/prefix",
 				lockTimeout: test.lockTimeout,
-				storedData:  make(map[string]*StoredData),
-				locks:       make(map[string]store.Locker),
 			}
 
 			assert.Equal(t, test.lockTimeout, kvStore.lockTimeout)

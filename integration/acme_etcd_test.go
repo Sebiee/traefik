@@ -120,10 +120,6 @@ func (s *AcmeEtcdSuite) TearDownTest() {
 	_ = s.kvClient.DeleteTree(ctx, "traefik/acme")
 }
 
-func (s *AcmeEtcdSuite) getAcmeURL() string {
-	return fmt.Sprintf("https://%s/dir", net.JoinHostPort(s.pebbleIP, "14000"))
-}
-
 // TestHTTP01WithEtcdStorage verifies basic certificate issuance with etcd storage.
 func (s *AcmeEtcdSuite) TestHTTP01WithEtcdStorage() {
 	testCase := acmeEtcdTestCase{
@@ -293,6 +289,10 @@ func (s *AcmeEtcdSuite) TestDistributedLockingWithMultipleDomains() {
 	// Verify both certificates are stored in etcd
 	s.verifyCertificateStoredInEtcd("default", "traefik.acme.wtf")
 	s.verifyCertificateStoredInEtcd("default", "traefik2.acme.wtf")
+}
+
+func (s *AcmeEtcdSuite) getAcmeURL() string {
+	return fmt.Sprintf("https://%s/dir", net.JoinHostPort(s.pebbleIP, "14000"))
 }
 
 // retrieveAcmeCertificateWithEtcd handles the common certificate retrieval logic.

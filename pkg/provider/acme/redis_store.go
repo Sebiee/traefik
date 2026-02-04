@@ -64,7 +64,7 @@ type RedisSentinelConfig struct {
 // SetDefaults sets the default values for RedisStoreConfig.
 func (c *RedisStoreConfig) SetDefaults() {
 	c.Endpoints = []string{"localhost:6379"}
-	c.Prefix = "traefik/acme"
+	c.Prefix = DefaultPrefix
 	c.LockTimeout = 30 * time.Second
 }
 

@@ -2,6 +2,7 @@ package acme
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -595,87 +596,87 @@ func TestIsKVStoreConnectionError(t *testing.T) {
 		},
 		{
 			desc:     "connection refused",
-			err:      fmt.Errorf("dial tcp 127.0.0.1:6379: connection refused"),
+			err:      errors.New("dial tcp 127.0.0.1:6379: connection refused"),
 			expected: true,
 		},
 		{
 			desc:     "connection reset by peer",
-			err:      fmt.Errorf("read tcp: connection reset by peer"),
+			err:      errors.New("read tcp: connection reset by peer"),
 			expected: true,
 		},
 		{
 			desc:     "no such host",
-			err:      fmt.Errorf("lookup redis.local: no such host"),
+			err:      errors.New("lookup redis.local: no such host"),
 			expected: true,
 		},
 		{
 			desc:     "network is unreachable",
-			err:      fmt.Errorf("dial tcp: network is unreachable"),
+			err:      errors.New("dial tcp: network is unreachable"),
 			expected: true,
 		},
 		{
 			desc:     "timeout error",
-			err:      fmt.Errorf("context deadline exceeded: timeout"),
+			err:      errors.New("context deadline exceeded: timeout"),
 			expected: true,
 		},
 		{
 			desc:     "deadline exceeded",
-			err:      fmt.Errorf("context deadline exceeded"),
+			err:      errors.New("context deadline exceeded"),
 			expected: true,
 		},
 		{
 			desc:     "EOF error",
-			err:      fmt.Errorf("read tcp: EOF"),
+			err:      errors.New("read tcp: EOF"),
 			expected: true,
 		},
 		{
 			desc:     "broken pipe",
-			err:      fmt.Errorf("write tcp: broken pipe"),
+			err:      errors.New("write tcp: broken pipe"),
 			expected: true,
 		},
 		{
 			desc:     "connection timed out",
-			err:      fmt.Errorf("dial tcp: connection timed out"),
+			err:      errors.New("dial tcp: connection timed out"),
 			expected: true,
 		},
 		{
 			desc:     "i/o timeout",
-			err:      fmt.Errorf("read tcp: i/o timeout"),
+			err:      errors.New("read tcp: i/o timeout"),
 			expected: true,
 		},
 		{
 			desc:     "dial tcp error",
-			err:      fmt.Errorf("dial tcp 10.0.0.1:2379: no route to host"),
+			err:      errors.New("dial tcp 10.0.0.1:2379: no route to host"),
 			expected: true,
 		},
 		{
 			desc:     "context canceled",
-			err:      fmt.Errorf("operation aborted: context canceled"),
+			err:      errors.New("operation aborted: context canceled"),
 			expected: true,
 		},
 		{
 			desc:     "lock already held (not a connection error)",
-			err:      fmt.Errorf("lock already held by another process"),
+			err:      errors.New("lock already held by another process"),
 			expected: false,
 		},
 		{
 			desc:     "key not found (not a connection error)",
-			err:      fmt.Errorf("key not found"),
+			err:      errors.New("key not found"),
 			expected: false,
 		},
 		{
 			desc:     "permission denied (not a connection error)",
-			err:      fmt.Errorf("permission denied for key"),
+			err:      errors.New("permission denied for key"),
 			expected: false,
 		},
 		{
 			desc:     "case insensitive connection refused",
-			err:      fmt.Errorf("Connection Refused"),
+			err:      errors.New("Connection Refused"),
 			expected: true,
 		},
 		{
 			desc:     "wrapped connection error",
-			err:      fmt.Errorf("failed to acquire lock: %w", fmt.Errorf("dial tcp: connection refused")),
+			err:      fmt.Errorf("failed to acquire lock: %w", errors.New("dial tcp: connection refused")),
 			expected: true,
 		},
 	}

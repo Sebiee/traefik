@@ -457,6 +457,7 @@ func (c *compositeHTTPChallengeHandler) ServeHTTP(rw http.ResponseWriter, req *h
 // committing the response to the client.
 type responseRecorder struct {
 	http.ResponseWriter
+
 	statusCode int
 	body       []byte
 	written    bool
@@ -548,7 +549,7 @@ func initACMEProvider(c *static.Configuration, providerAggregator *aggregator.Pr
 		}
 
 		var store acme.Store
-		var httpChallenge challenge.Provider = httpChallengeProvider
+		httpChallenge := httpChallengeProvider
 		ctx := context.Background()
 
 		// Check if a distributed KV store is configured

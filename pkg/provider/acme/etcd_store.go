@@ -34,7 +34,7 @@ type EtcdStoreConfig struct {
 // SetDefaults sets the default values for EtcdStoreConfig.
 func (c *EtcdStoreConfig) SetDefaults() {
 	c.Endpoints = []string{"127.0.0.1:2379"}
-	c.Prefix = "traefik/acme"
+	c.Prefix = DefaultPrefix
 	c.LockTimeout = 30 * time.Second
 }
 

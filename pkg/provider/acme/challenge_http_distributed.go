@@ -150,6 +150,49 @@ func (c *DistributedChallengeHTTP) ServeHTTP(rw http.ResponseWriter, req *http.R
 	rw.WriteHeader(http.StatusNotFound)
 }
 
+// WatchChallenges watches for new challenges from other replicas.
+// This helps pre-populate the local cache for faster response times.
+func (c *DistributedChallengeHTTP) WatchChallenges(ctx context.Context) error {
+	logger := log.With().Str(logs.ProviderName, "acme").Logger()
+
+	// prefix already includes /challenges from initialization
+	prefix := c.prefix + "/"
+	events, err := c.kvClient.WatchTree(ctx, prefix, nil)
+	if err != nil {
+		return fmt.Errorf("failed to watch challenges: %w", err)
+	}
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case pairs, ok := <-events:
+				if !ok {
+					logger.Warn().Msg("Challenge watch channel closed")
+					return
+				}
+
+				// Update local cache with challenges from other replicas
+				c.lock.Lock()
+				for _, pair := range pairs {
+					var data ChallengeData
+					if err := json.Unmarshal(pair.Value, &data); err == nil {
+						if _, ok := c.localCache[data.Token]; !ok {
+							c.localCache[data.Token] = map[string][]byte{}
+						}
+						c.localCache[data.Token][data.Domain] = []byte(data.KeyAuth)
+						logger.Debug().Msgf("Synced ACME challenge for %s from distributed store", data.Domain)
+					}
+				}
+				c.lock.Unlock()
+			}
+		}
+	}()
+
+	return nil
+}
+
 func (c *DistributedChallengeHTTP) getTokenValue(ctx context.Context, token, domain string) []byte {
 	logger := log.Ctx(ctx)
 	logger.Debug().Msgf("Retrieving the ACME challenge for %s (token %q)...", domain, token)
@@ -198,47 +241,4 @@ func (c *DistributedChallengeHTTP) getTokenValue(ctx context.Context, token, dom
 
 func (c *DistributedChallengeHTTP) challengeKey(token, domain string) string {
 	return fmt.Sprintf("%s/%s/%s", c.prefix, token, domain)
-}
-
-// WatchChallenges watches for new challenges from other replicas.
-// This helps pre-populate the local cache for faster response times.
-func (c *DistributedChallengeHTTP) WatchChallenges(ctx context.Context) error {
-	logger := log.With().Str(logs.ProviderName, "acme").Logger()
-
-	// prefix already includes /challenges from initialization
-	prefix := c.prefix + "/"
-	events, err := c.kvClient.WatchTree(ctx, prefix, nil)
-	if err != nil {
-		return fmt.Errorf("failed to watch challenges: %w", err)
-	}
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case pairs, ok := <-events:
-				if !ok {
-					logger.Warn().Msg("Challenge watch channel closed")
-					return
-				}
-
-				// Update local cache with challenges from other replicas
-				c.lock.Lock()
-				for _, pair := range pairs {
-					var data ChallengeData
-					if err := json.Unmarshal(pair.Value, &data); err == nil {
-						if _, ok := c.localCache[data.Token]; !ok {
-							c.localCache[data.Token] = map[string][]byte{}
-						}
-						c.localCache[data.Token][data.Domain] = []byte(data.KeyAuth)
-						logger.Debug().Msgf("Synced ACME challenge for %s from distributed store", data.Domain)
-					}
-				}
-				c.lock.Unlock()
-			}
-		}
-	}()
-
-	return nil
 }

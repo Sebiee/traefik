@@ -34,7 +34,7 @@ type ConsulStoreConfig struct {
 // SetDefaults sets the default values for ConsulStoreConfig.
 func (c *ConsulStoreConfig) SetDefaults() {
 	c.Endpoints = []string{"127.0.0.1:8500"}
-	c.Prefix = "traefik/acme"
+	c.Prefix = DefaultPrefix
 	c.LockTimeout = 30 * time.Second
 }
 

@@ -8,8 +8,8 @@ import (
 
 // StoredData represents the data managed by Store.
 type StoredData struct {
-	Account      *Account
-	Certificates []*CertAndStore
+	Account      *Account        `json:"Account"`
+	Certificates []*CertAndStore `json:"Certificates"`
 }
 
 // Store is a generic interface that represents a storage.

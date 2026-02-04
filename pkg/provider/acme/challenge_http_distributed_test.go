@@ -113,7 +113,7 @@ func TestDistributedChallengeHTTP_PresentAndServe(t *testing.T) {
 
 	// Verify it's stored in KV store with correct key
 	expectedKey := prefix + "/" + token + "/" + domain
-	pair, err := mockStore.Get(context.Background(), expectedKey, nil)
+	pair, err := mockStore.Get(t.Context(), expectedKey, nil)
 	require.NoError(t, err)
 	require.NotNil(t, pair)
 
@@ -158,8 +158,9 @@ func TestDistributedChallengeHTTP_ServeHTTPFromKVStore(t *testing.T) {
 		Token:   token,
 		KeyAuth: keyAuth,
 	}
-	value, _ := json.Marshal(data)
-	_ = mockStore.Put(context.Background(), key, value, nil)
+	value, err := json.Marshal(data)
+	require.NoError(t, err)
+	_ = mockStore.Put(t.Context(), key, value, nil)
 
 	// Create a new DistributedChallengeHTTP that doesn't have this in local cache
 	distChallenge := NewDistributedChallengeHTTP(mockStore, prefix)
@@ -192,7 +193,7 @@ func TestDistributedChallengeHTTP_CleanUp(t *testing.T) {
 
 	// Verify it exists
 	key := prefix + "/" + token + "/" + domain
-	_, err = mockStore.Get(context.Background(), key, nil)
+	_, err = mockStore.Get(t.Context(), key, nil)
 	require.NoError(t, err)
 
 	// Clean up
@@ -200,7 +201,7 @@ func TestDistributedChallengeHTTP_CleanUp(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify it's removed from KV store
-	_, err = mockStore.Get(context.Background(), key, nil)
+	_, err = mockStore.Get(t.Context(), key, nil)
 	assert.ErrorIs(t, err, store.ErrKeyNotFound)
 
 	// Verify it's removed from local cache
@@ -271,7 +272,7 @@ func TestDistributedChallengeHTTP_ThreadSafety(t *testing.T) {
 
 	// Run concurrent operations
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

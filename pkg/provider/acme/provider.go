@@ -84,7 +84,7 @@ func (a *Configuration) SetDefaults() {
 // CertAndStore allows mapping a TLS certificate to a TLS store.
 type CertAndStore struct {
 	Certificate
-	Store string
+	Store string `json:"Store"`
 }
 
 // Certificate is a struct which contains all data needed from an ACME certificate.
@@ -773,17 +773,15 @@ func (p *Provider) resolveCertificate(ctx context.Context, domain types.Domain, 
 			for _, cert := range freshCerts {
 				certDomains := cert.Domain.ToStrArray()
 				for _, d := range uncheckedDomains {
-					for _, cd := range certDomains {
-						if d == cd {
-							logger.Info().Msgf("Certificate for %s was obtained by another replica, skipping", d)
-							p.removeResolvingDomains(uncheckedDomains)
-							// Refresh local certificates
-							p.certificatesMu.Lock()
-							p.certificates = freshCerts
-							p.certificatesMu.Unlock()
-							p.configurationChan <- p.buildMessage()
-							return types.Domain{}, nil, nil
-						}
+					if slices.Contains(certDomains, d) {
+						logger.Info().Msgf("Certificate for %s was obtained by another replica, skipping", d)
+						p.removeResolvingDomains(uncheckedDomains)
+						// Refresh local certificates
+						p.certificatesMu.Lock()
+						p.certificates = freshCerts
+						p.certificatesMu.Unlock()
+						p.configurationChan <- p.buildMessage()
+						return types.Domain{}, nil, nil
 					}
 				}
 			}

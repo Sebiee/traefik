@@ -18,6 +18,9 @@ import (
 	"github.com/traefik/traefik/v3/pkg/types"
 )
 
+// DefaultPrefix is the default KV store prefix for ACME data.
+const DefaultPrefix = "traefik/acme"
+
 // Compile-time interface checks to ensure KVStore properly implements both interfaces.
 var (
 	_ Store            = (*KVStore)(nil)
@@ -47,7 +50,7 @@ type KVStoreConfig struct {
 
 // SetDefaults sets the default values for KVStoreConfig.
 func (c *KVStoreConfig) SetDefaults() {
-	c.Prefix = "traefik/acme"
+	c.Prefix = DefaultPrefix
 	c.LockTimeout = 30 * time.Second
 }
 
@@ -211,6 +214,55 @@ func (s *KVStore) ReleaseLock(domain string) error {
 	return nil
 }
 
+// Watch sets up a watch on the KV store for ACME data changes.
+// This allows Traefik instances to sync certificate updates from other instances.
+func (s *KVStore) Watch(ctx context.Context, resolverName string) (<-chan struct{}, error) {
+	logger := log.With().Str(logs.ProviderName, "acme-kv").Logger()
+
+	key := fmt.Sprintf("%s/data/%s", s.prefix, resolverName)
+
+	events, err := s.kvClient.Watch(ctx, key, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to watch KV store: %w", err)
+	}
+
+	updates := make(chan struct{}, 1)
+
+	go func() {
+		defer close(updates)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case pair, ok := <-events:
+				if !ok {
+					logger.Warn().Msg("KV store watch channel closed")
+					return
+				}
+				if pair == nil {
+					continue
+				}
+
+				// Invalidate local cache so next get() fetches fresh data
+				s.lock.Lock()
+				delete(s.storedData, resolverName)
+				s.lock.Unlock()
+
+				// Notify watchers
+				select {
+				case updates <- struct{}{}:
+				default:
+					// Channel already has pending notification
+				}
+
+				logger.Debug().Str("resolver", resolverName).Msg("ACME data updated in KV store")
+			}
+		}
+	}()
+
+	return updates, nil
+}
+
 // get retrieves the StoredData for the given resolver from the KV store.
 func (s *KVStore) get(resolverName string) (*StoredData, error) {
 	s.lock.Lock()
@@ -299,55 +351,6 @@ func (s *KVStore) saveUnsafe(resolverName string, storedData *StoredData) error 
 		Msg("Saved ACME data to KV store")
 
 	return nil
-}
-
-// Watch sets up a watch on the KV store for ACME data changes.
-// This allows Traefik instances to sync certificate updates from other instances.
-func (s *KVStore) Watch(ctx context.Context, resolverName string) (<-chan struct{}, error) {
-	logger := log.With().Str(logs.ProviderName, "acme-kv").Logger()
-
-	key := fmt.Sprintf("%s/data/%s", s.prefix, resolverName)
-
-	events, err := s.kvClient.Watch(ctx, key, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to watch KV store: %w", err)
-	}
-
-	updates := make(chan struct{}, 1)
-
-	go func() {
-		defer close(updates)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case pair, ok := <-events:
-				if !ok {
-					logger.Warn().Msg("KV store watch channel closed")
-					return
-				}
-				if pair == nil {
-					continue
-				}
-
-				// Invalidate local cache so next get() fetches fresh data
-				s.lock.Lock()
-				delete(s.storedData, resolverName)
-				s.lock.Unlock()
-
-				// Notify watchers
-				select {
-				case updates <- struct{}{}:
-				default:
-					// Channel already has pending notification
-				}
-
-				logger.Debug().Str("resolver", resolverName).Msg("ACME data updated in KV store")
-			}
-		}
-	}()
-
-	return updates, nil
 }
 
 // compress compresses data using gzip.
