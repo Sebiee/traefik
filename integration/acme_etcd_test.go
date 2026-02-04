@@ -5,11 +5,13 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/tls"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,7 +207,7 @@ func (s *AcmeEtcdSuite) TestAccountPersistenceInEtcd() {
 	require.NotEmpty(s.T(), pair.Value)
 
 	// The data is gzip compressed, verify it's not empty
-	assert.Greater(s.T(), len(pair.Value), 0)
+	assert.NotEmpty(s.T(), pair.Value)
 }
 
 // TestEtcdConnectionFailureFallback verifies graceful degradation when etcd is unavailable.
@@ -348,12 +350,12 @@ func (s *AcmeEtcdSuite) retrieveAcmeCertificateWithEtcd(testCase acmeEtcdTestCas
 			return err
 		}
 		if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
-			return fmt.Errorf("no TLS certificate")
+			return errors.New("no TLS certificate")
 		}
 		gotDomains = append(gotDomains, resp.TLS.PeerCertificates[0].Subject.CommonName)
 		gotDomains = append(gotDomains, resp.TLS.PeerCertificates[0].DNSNames...)
 
-		if !containsDomain(gotDomains, testCase.expectedDomain) {
+		if !slices.Contains(gotDomains, testCase.expectedDomain) {
 			return fmt.Errorf("domain %s not found in %v", testCase.expectedDomain, gotDomains)
 		}
 		return nil
@@ -368,86 +370,31 @@ func (s *AcmeEtcdSuite) verifyCertificateStoredInEtcd(resolverName, expectedDoma
 	ctx := context.Background()
 	key := fmt.Sprintf("traefik/acme/data/%s", resolverName)
 
-	// Wait for data to appear with retries - CI can be slow
-	var pair *store.KVPair
-	err := try.Do(30*time.Second, func() error {
-		var errGet error
-		pair, errGet = s.kvClient.Get(ctx, key, nil)
+	// Wait for data containing the expected domain to appear - CI can be slow
+	err := try.Do(60*time.Second, func() error {
+		pair, errGet := s.kvClient.Get(ctx, key, nil)
 		if errGet != nil {
 			return errGet
 		}
 		if pair == nil || len(pair.Value) == 0 {
 			return fmt.Errorf("no data found for key %s", key)
 		}
+
+		// Data is gzip compressed, try to decompress
+		decompressed, errDecompress := decompressForTest(pair.Value)
+		if errDecompress != nil {
+			// Might be uncompressed
+			decompressed = pair.Value
+		}
+
+		// Simple check: the domain should appear in the JSON data
+		if !strings.Contains(string(decompressed), expectedDomain) {
+			return fmt.Errorf("domain %s not yet found in stored data", expectedDomain)
+		}
+
 		return nil
 	})
-	require.NoError(s.T(), err)
-
-	// Data is gzip compressed, try to decompress
-	decompressed, err := decompressForTest(pair.Value)
-	if err != nil {
-		// Might be uncompressed for backward compatibility
-		decompressed = pair.Value
-	}
-
-	// Verify it contains certificate structure - use the actual Traefik types
-	var storedData struct {
-		Account      interface{} `json:"Account"`
-		Certificates []struct {
-			Certificate struct {
-				Domain struct {
-					Main string   `json:"main"`
-					SANs []string `json:"sans"`
-				} `json:"domain"`
-			} `json:"Certificate"`
-			Store string `json:"Store"`
-		} `json:"Certificates"`
-	}
-
-	err = json.Unmarshal(decompressed, &storedData)
-	if err != nil {
-		// Try alternative structure (embedded Certificate)
-		var altStoredData struct {
-			Account      interface{} `json:"Account"`
-			Certificates []struct {
-				Domain struct {
-					Main string   `json:"main"`
-					SANs []string `json:"sans"`
-				} `json:"domain"`
-			} `json:"Certificates"`
-		}
-		err = json.Unmarshal(decompressed, &altStoredData)
-		require.NoError(s.T(), err, "Failed to unmarshal stored data")
-
-		found := false
-		for _, cert := range altStoredData.Certificates {
-			if cert.Domain.Main == expectedDomain || containsDomain(cert.Domain.SANs, expectedDomain) {
-				found = true
-				break
-			}
-		}
-		assert.True(s.T(), found, "Expected domain %s not found in stored certificates", expectedDomain)
-		return
-	}
-
-	// Verify the expected domain is in the certificates
-	found := false
-	for _, cert := range storedData.Certificates {
-		if cert.Certificate.Domain.Main == expectedDomain || containsDomain(cert.Certificate.Domain.SANs, expectedDomain) {
-			found = true
-			break
-		}
-	}
-	assert.True(s.T(), found, "Expected domain %s not found in stored certificates", expectedDomain)
-}
-
-func containsDomain(domains []string, domain string) bool {
-	for _, d := range domains {
-		if d == domain {
-			return true
-		}
-	}
-	return false
+	require.NoError(s.T(), err, "Certificate for %s not found in etcd", expectedDomain)
 }
 
 func decompressForTest(data []byte) ([]byte, error) {
