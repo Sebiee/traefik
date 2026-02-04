@@ -9,17 +9,17 @@ env:
   GO_VERSION: '1.24'
   CGO_ENABLED: 0
   VERSION: ${{ github.ref_name }}
-  TRAEFIKER_EMAIL: "traefiker@traefik.io"
+  DEPLOYER_EMAIL: "sebiee@users.noreply.github.com"
   CODENAME: ramequin
 
 jobs:
 
   build-webui:
-    if: github.ref_type == 'tag' && github.repository == 'traefik/traefik'
+    if: github.ref_type == 'tag' && github.repository == 'Sebiee/traefik'
     uses: ./.github/workflows/template-webui.yaml
 
   build:
-    if: github.ref_type == 'tag' && github.repository == 'traefik/traefik'
+    if: github.ref_type == 'tag' && github.repository == 'Sebiee/traefik'
     runs-on: ubuntu-latest
 
     strategy:
@@ -81,7 +81,7 @@ jobs:
           retention-days: 1
 
   release:
-    if: github.ref_type == 'tag' && github.repository == 'traefik/traefik'
+    if: github.ref_type == 'tag' && github.repository == 'Sebiee/traefik'
     runs-on: ubuntu-latest
 
     needs:
@@ -105,10 +105,10 @@ jobs:
 
       - name: Retrieve the secret and decode it to a file
         env:
-          TRAEFIKER_RSA: ${{ secrets.TRAEFIKER_RSA }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "${TRAEFIKER_RSA}" | base64 --decode > ~/.ssh/traefiker_rsa
+          echo "${DEPLOY_SSH_KEY}" | base64 --decode > ~/.ssh/deploy_rsa
 
       - name: Download All Artifacts
         uses: actions/download-artifact@v4
@@ -128,9 +128,9 @@ jobs:
             --exclude .idea \
             --exclude .github \
             --exclude dist .
-          
+
           chown -R "$(id -u)":"$(id -g)" dist/
-          gh release create ${VERSION} ./dist/**/traefik*.{zip,tar.gz} ./dist/traefik*.{tar.gz,txt} --repo traefik/traefik --title ${VERSION} --notes ${VERSION} --latest=false
-          
+          gh release create ${VERSION} ./dist/**/traefik*.{zip,tar.gz} ./dist/traefik*.{tar.gz,txt} --repo Sebiee/traefik --title ${VERSION} --notes ${VERSION} --latest=false
+
           ./script/deploy.sh
 

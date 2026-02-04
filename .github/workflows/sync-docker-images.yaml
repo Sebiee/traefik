@@ -11,7 +11,7 @@ jobs:
     permissions:
       packages: write
       contents: read
-    if: github.repository == 'traefik/traefik'
+    if: github.repository == 'Sebiee/traefik'
 
     steps:
       - uses: actions/checkout@v4
