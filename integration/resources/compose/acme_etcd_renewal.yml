@@ -13,10 +13,14 @@ services:
   pebble:
     image: ghcr.io/letsencrypt/pebble:2.8.0
     command:
-      - --dnsserver
+      - -config
+      - /test/config/pebble-config.json
+      - -dnsserver
       - host.docker.internal:5053
     environment:
       # https://github.com/letsencrypt/pebble#testing-at-full-speed
       PEBBLE_VA_NOSLEEP: 1
       # https://github.com/letsencrypt/pebble#invalid-anti-replay-nonce-errors
       PEBBLE_WFE_NONCEREJECT: 0
+    volumes:
+      - ./fixtures/acme/pebble-config-short-cert.json:/test/config/pebble-config.json

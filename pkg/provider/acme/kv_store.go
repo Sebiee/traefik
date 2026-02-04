@@ -27,25 +27,14 @@ var (
 	_ DistributedStore = (*KVStore)(nil)
 )
 
-// KVStoreConfig holds the configuration for connecting to a KV store.
+// KVStoreConfig holds KV store connection settings for ACME storage.
 type KVStoreConfig struct {
-	// Endpoints is the list of KV store endpoints.
-	Endpoints []string `description:"KV store endpoints." json:"endpoints,omitempty" toml:"endpoints,omitempty" yaml:"endpoints,omitempty"`
-
-	// Prefix is the key prefix used for storing ACME data.
-	Prefix string `description:"Prefix for ACME data keys." json:"prefix,omitempty" toml:"prefix,omitempty" yaml:"prefix,omitempty"`
-
-	// TLS configuration for the KV store connection.
-	TLS *types.ClientTLS `description:"TLS configuration for KV store." json:"tls,omitempty" toml:"tls,omitempty" yaml:"tls,omitempty"`
-
-	// Username for authentication.
-	Username string `description:"Username for KV store authentication." json:"username,omitempty" toml:"username,omitempty" yaml:"username,omitempty" loggable:"false"`
-
-	// Password for authentication.
-	Password string `description:"Password for KV store authentication." json:"password,omitempty" toml:"password,omitempty" yaml:"password,omitempty" loggable:"false"`
-
-	// LockTimeout is the timeout for acquiring locks during certificate operations.
-	LockTimeout time.Duration `description:"Lock timeout for certificate operations." json:"lockTimeout,omitempty" toml:"lockTimeout,omitempty" yaml:"lockTimeout,omitempty"`
+	Endpoints   []string         `description:"KV store endpoints." json:"endpoints,omitempty" toml:"endpoints,omitempty" yaml:"endpoints,omitempty"`
+	Prefix      string           `description:"Prefix for ACME data keys." json:"prefix,omitempty" toml:"prefix,omitempty" yaml:"prefix,omitempty"`
+	TLS         *types.ClientTLS `description:"TLS configuration for KV store." json:"tls,omitempty" toml:"tls,omitempty" yaml:"tls,omitempty"`
+	Username    string           `description:"Username for KV store authentication." json:"username,omitempty" toml:"username,omitempty" yaml:"username,omitempty" loggable:"false"`
+	Password    string           `description:"Password for KV store authentication." json:"password,omitempty" toml:"password,omitempty" yaml:"password,omitempty" loggable:"false"`
+	LockTimeout time.Duration    `description:"Lock timeout for certificate operations." json:"lockTimeout,omitempty" toml:"lockTimeout,omitempty" yaml:"lockTimeout,omitempty"`
 }
 
 // SetDefaults sets the default values for KVStoreConfig.
@@ -54,9 +43,7 @@ func (c *KVStoreConfig) SetDefaults() {
 	c.LockTimeout = 30 * time.Second
 }
 
-// KVStore implements the Store interface using a distributed key-value store.
-// This allows multiple Traefik instances to share ACME certificates,
-// preventing conflicts and rate limiting issues with Let's Encrypt.
+// KVStore implements the Store and DistributedStore interfaces using a KV backend.
 type KVStore struct {
 	kvClient    store.Store
 	prefix      string
@@ -65,8 +52,7 @@ type KVStore struct {
 	lock       sync.RWMutex
 	storedData map[string]*StoredData
 
-	// locks is used to track distributed locks for certificate operations.
-	locks map[string]store.Locker
+	locks map[string]store.Locker // active distributed locks by resolver/domain
 }
 
 // NewKVStore creates a new KVStore with the given configuration.
@@ -105,8 +91,7 @@ func (s *KVStore) GetAccount(resolverName string) (*Account, error) {
 	return storedData.Account, nil
 }
 
-// Client returns the underlying KV store client.
-// This is used to create distributed HTTP challenge providers.
+// Client returns the underlying KV store client for creating additional providers.
 func (s *KVStore) Client() store.Store {
 	return s.kvClient
 }
@@ -134,9 +119,22 @@ func (s *KVStore) GetCertificates(resolverName string) ([]*CertAndStore, error) 
 	return storedData.Certificates, nil
 }
 
-// SaveCertificates stores the ACME Certificates for the given resolver.
-// This method uses distributed locking to prevent race conditions between
-// multiple Traefik instances.
+// GetCertificatesFresh fetches certificates directly from the KV store, bypassing cache.
+// Use after acquiring a lock to ensure visibility of certificates from other replicas.
+func (s *KVStore) GetCertificatesFresh(resolverName string) ([]*CertAndStore, error) {
+	s.lock.Lock()
+	// Invalidate cache to force a fresh fetch
+	delete(s.storedData, resolverName)
+	s.lock.Unlock()
+
+	storedData, err := s.get(resolverName)
+	if err != nil {
+		return nil, err
+	}
+	return storedData.Certificates, nil
+}
+
+// SaveCertificates stores ACME certificates for the given resolver.
 func (s *KVStore) SaveCertificates(resolverName string, certificates []*CertAndStore) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -150,13 +148,12 @@ func (s *KVStore) SaveCertificates(resolverName string, certificates []*CertAndS
 	return s.saveUnsafe(resolverName, storedData)
 }
 
-// AcquireLock attempts to acquire a distributed lock for the given domain.
-// This prevents multiple Traefik instances from simultaneously requesting
-// certificates for the same domain.
-func (s *KVStore) AcquireLock(ctx context.Context, domain string) (store.Locker, error) {
+// AcquireLock acquires a distributed lock for certificate operations on a domain.
+// The lock is namespaced by resolver to allow multiple resolvers to handle the same domain.
+func (s *KVStore) AcquireLock(ctx context.Context, resolverName, domain string) (store.Locker, error) {
 	logger := log.With().Str(logs.ProviderName, "acme-kv").Logger()
 
-	lockKey := fmt.Sprintf("%s/locks/%s", s.prefix, domain)
+	lockKey := fmt.Sprintf("%s/%s/locks/%s", s.prefix, resolverName, domain)
 
 	locker, err := s.kvClient.NewLock(ctx, lockKey, &store.LockOptions{
 		TTL: s.lockTimeout,
@@ -178,27 +175,30 @@ func (s *KVStore) AcquireLock(ctx context.Context, domain string) (store.Locker,
 	go func() {
 		select {
 		case <-lockChan:
-			logger.Warn().Str("domain", domain).Msg("Lost distributed lock for domain")
+			logger.Warn().Str("resolver", resolverName).Str("domain", domain).Msg("Lost distributed lock")
 		case <-ctx.Done():
 			return
 		}
 	}()
 
-	logger.Debug().Str("domain", domain).Msg("Acquired distributed lock for domain")
+	lockMapKey := fmt.Sprintf("%s/%s", resolverName, domain)
+	logger.Debug().Str("resolver", resolverName).Str("domain", domain).Msg("Acquired distributed lock")
 
 	s.lock.Lock()
-	s.locks[domain] = locker
+	s.locks[lockMapKey] = locker
 	s.lock.Unlock()
 
 	return locker, nil
 }
 
-// ReleaseLock releases the distributed lock for the given domain.
-func (s *KVStore) ReleaseLock(domain string) error {
+// ReleaseLock releases the distributed lock for the given resolver and domain.
+func (s *KVStore) ReleaseLock(resolverName, domain string) error {
+	lockMapKey := fmt.Sprintf("%s/%s", resolverName, domain)
+
 	s.lock.Lock()
-	locker, exists := s.locks[domain]
+	locker, exists := s.locks[lockMapKey]
 	if exists {
-		delete(s.locks, domain)
+		delete(s.locks, lockMapKey)
 	}
 	s.lock.Unlock()
 
@@ -207,15 +207,14 @@ func (s *KVStore) ReleaseLock(domain string) error {
 	}
 
 	if err := locker.Unlock(context.Background()); err != nil {
-		return fmt.Errorf("failed to release lock for domain %s: %w", domain, err)
+		return fmt.Errorf("failed to release lock for resolver %s domain %s: %w", resolverName, domain, err)
 	}
 
-	log.Debug().Str(logs.ProviderName, "acme-kv").Str("domain", domain).Msg("Released distributed lock for domain")
+	log.Debug().Str(logs.ProviderName, "acme-kv").Str("resolver", resolverName).Str("domain", domain).Msg("Released distributed lock")
 	return nil
 }
 
-// Watch sets up a watch on the KV store for ACME data changes.
-// This allows Traefik instances to sync certificate updates from other instances.
+// Watch subscribes to certificate updates from the KV store for cross-replica sync.
 func (s *KVStore) Watch(ctx context.Context, resolverName string) (<-chan struct{}, error) {
 	logger := log.With().Str(logs.ProviderName, "acme-kv").Logger()
 
@@ -263,7 +262,7 @@ func (s *KVStore) Watch(ctx context.Context, resolverName string) (<-chan struct
 	return updates, nil
 }
 
-// get retrieves the StoredData for the given resolver from the KV store.
+// get retrieves StoredData, using local cache when available.
 func (s *KVStore) get(resolverName string) (*StoredData, error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -271,13 +270,11 @@ func (s *KVStore) get(resolverName string) (*StoredData, error) {
 	return s.getUnsafe(resolverName)
 }
 
-// getUnsafe retrieves the StoredData without acquiring locks.
-// Caller must hold s.lock.
+// getUnsafe retrieves StoredData without locking. Caller must hold s.lock.
 func (s *KVStore) getUnsafe(resolverName string) (*StoredData, error) {
 	logger := log.With().Str(logs.ProviderName, "acme-kv").Logger()
 	ctx := context.Background()
 
-	// Check local cache first
 	if cached, ok := s.storedData[resolverName]; ok {
 		return cached, nil
 	}
@@ -287,18 +284,15 @@ func (s *KVStore) getUnsafe(resolverName string) (*StoredData, error) {
 	pair, err := s.kvClient.Get(ctx, key, nil)
 	if err != nil {
 		if errors.Is(err, store.ErrKeyNotFound) {
-			// No data yet, return empty StoredData
 			s.storedData[resolverName] = &StoredData{}
 			return s.storedData[resolverName], nil
 		}
 		return nil, fmt.Errorf("failed to get ACME data from KV store: %w", err)
 	}
 
-	// Decompress the data (certificates can be large, we compress them)
 	data, err := decompress(pair.Value)
 	if err != nil {
-		// Try uncompressed for backward compatibility
-		data = pair.Value
+		data = pair.Value // Try uncompressed for backward compatibility
 	}
 
 	storedData := &StoredData{}

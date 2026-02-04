@@ -386,30 +386,42 @@ func (s *BaseSuite) displayLogK3S() {
 }
 
 func (s *BaseSuite) displayLogCompose() {
+	const maxBytesPerContainer = 500 * 1024 // 500KB max per container to avoid CI log bloat
 	for name, ctn := range s.containers {
 		readCloser, err := ctn.Logs(s.T().Context())
 		require.NoError(s.T(), err)
-		for {
-			b := make([]byte, 1024)
-			_, err := readCloser.Read(b)
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			require.NoError(s.T(), err)
 
-			trimLogs := bytes.Trim(bytes.TrimSpace(b), string([]byte{0}))
-			if len(trimLogs) > 0 {
-				log.Info().Str("container", name).Msg(string(trimLogs))
-			}
+		allLogs, err := io.ReadAll(readCloser)
+		if err != nil && !errors.Is(err, io.EOF) {
+			log.Error().Err(err).Str("container", name).Msg("Failed to read container logs")
+			continue
 		}
+
+		trimLogs := bytes.Trim(bytes.TrimSpace(allLogs), string([]byte{0}))
+		if len(trimLogs) == 0 {
+			continue
+		}
+
+		if len(trimLogs) > maxBytesPerContainer {
+			log.Info().Str("container", name).Msgf("(logs truncated: showing last %d of %d bytes)", maxBytesPerContainer, len(trimLogs))
+			trimLogs = trimLogs[len(trimLogs)-maxBytesPerContainer:]
+		}
+
+		log.Info().Str("container", name).Msg(string(trimLogs))
 	}
 }
 
 func (s *BaseSuite) displayTraefikLog(output *bytes.Buffer) {
+	const maxLogBytes = 1000 * 1024 // 1MB max to avoid CI log bloat
 	if output == nil || output.Len() == 0 {
 		log.Info().Msg("No Traefik logs.")
 	} else {
-		for _, line := range strings.Split(output.String(), "\n") {
+		content := output.String()
+		if len(content) > maxLogBytes {
+			log.Info().Msgf("(Traefik logs truncated: showing last %d of %d bytes)", maxLogBytes, len(content))
+			content = content[len(content)-maxLogBytes:]
+		}
+		for _, line := range strings.Split(content, "\n") {
 			log.Info().Msg(line)
 		}
 	}

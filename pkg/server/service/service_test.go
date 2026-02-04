@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -202,7 +203,7 @@ func TestGetLoadBalancerServiceHandler(t *testing.T) {
 				Strategy: dynamic.BalancerStrategyWRR,
 				Servers: []dynamic.Server{
 					{
-						URL: "http://foo",
+						URL: "http://127.0.0.1:1",
 					},
 				},
 			},
@@ -742,7 +743,11 @@ func (forwarderMock) ServeHTTP(http.ResponseWriter, *http.Request) {
 type transportManagerMock struct{}
 
 func (t transportManagerMock) GetRoundTripper(_ string) (http.RoundTripper, error) {
-	return &http.Transport{}, nil
+	return &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 4 * time.Second,
+		}).DialContext,
+	}, nil
 }
 
 func (t transportManagerMock) GetTLSConfig(_ string) (*tls.Config, error) {

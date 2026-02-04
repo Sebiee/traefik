@@ -10,25 +10,14 @@ import (
 	"github.com/traefik/traefik/v3/pkg/types"
 )
 
-// EtcdStoreConfig holds the etcd-specific configuration for ACME storage.
+// EtcdStoreConfig holds etcd-specific settings for ACME storage.
 type EtcdStoreConfig struct {
-	// Endpoints is the list of etcd endpoints.
-	Endpoints []string `description:"etcd endpoints." json:"endpoints,omitempty" toml:"endpoints,omitempty" yaml:"endpoints,omitempty"`
-
-	// Username for etcd authentication.
-	Username string `description:"Username for etcd authentication." json:"username,omitempty" toml:"username,omitempty" yaml:"username,omitempty" loggable:"false"`
-
-	// Password for etcd authentication.
-	Password string `description:"Password for etcd authentication." json:"password,omitempty" toml:"password,omitempty" yaml:"password,omitempty" loggable:"false"`
-
-	// Prefix is the key prefix for ACME data.
-	Prefix string `description:"Key prefix for ACME data." json:"prefix,omitempty" toml:"prefix,omitempty" yaml:"prefix,omitempty"`
-
-	// TLS configuration.
-	TLS *types.ClientTLS `description:"TLS configuration for etcd connection." json:"tls,omitempty" toml:"tls,omitempty" yaml:"tls,omitempty"`
-
-	// LockTimeout is the timeout for distributed locks.
-	LockTimeout time.Duration `description:"Lock timeout for certificate operations." json:"lockTimeout,omitempty" toml:"lockTimeout,omitempty" yaml:"lockTimeout,omitempty"`
+	Endpoints   []string         `description:"etcd endpoints." json:"endpoints,omitempty" toml:"endpoints,omitempty" yaml:"endpoints,omitempty"`
+	Username    string           `description:"Username for etcd authentication." json:"username,omitempty" toml:"username,omitempty" yaml:"username,omitempty" loggable:"false"`
+	Password    string           `description:"Password for etcd authentication." json:"password,omitempty" toml:"password,omitempty" yaml:"password,omitempty" loggable:"false"`
+	Prefix      string           `description:"Key prefix for ACME data." json:"prefix,omitempty" toml:"prefix,omitempty" yaml:"prefix,omitempty"`
+	TLS         *types.ClientTLS `description:"TLS configuration for etcd connection." json:"tls,omitempty" toml:"tls,omitempty" yaml:"tls,omitempty"`
+	LockTimeout time.Duration    `description:"Lock timeout for certificate operations." json:"lockTimeout,omitempty" toml:"lockTimeout,omitempty" yaml:"lockTimeout,omitempty"`
 }
 
 // SetDefaults sets the default values for EtcdStoreConfig.

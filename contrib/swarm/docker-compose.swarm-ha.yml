@@ -1,156 +1,75 @@
-# Traefik Docker Swarm HA Configuration with Distributed ACME Storage
-#
-# This example shows how to run multiple Traefik replicas in Docker Swarm
-# with shared ACME certificate storage using Redis.
-#
-# Key features:
-# - 3 Traefik replicas for high availability
-# - Redis for distributed certificate storage
-# - HTTP-01 or DNS-01 challenge for ACME (both work with distributed storage)
-# - Automatic challenge token sharing between all replicas (for HTTP-01)
-# - Automatic certificate sharing between all replicas
-# - Distributed locking to prevent duplicate certificate requests
-#
-# Deploy with: docker stack deploy -c docker-compose.swarm-ha.yml traefik
-
-version: "3.8"
-
 services:
-  # Redis for distributed ACME certificate storage
-  redis:
-    image: redis:7-alpine
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    hostname: "etcd-{{ '{{' }}.Task.Slot{{ '}}' }}"
+    environment:
+      ETCD_NAME: "etcd-{{ '{{' }}.Task.Slot{{ '}}' }}"
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_ADVERTISE_CLIENT_URLS: "http://etcd-{{ '{{' }}.Task.Slot{{ '}}' }}:2379"
+      ETCD_LISTEN_METRICS_URLS: http://0.0.0.0:2381
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: "http://etcd-{{ '{{' }}.Task.Slot{{ '}}' }}:2380"
+      ETCD_INITIAL_CLUSTER_STATE: new
+      ETCD_INITIAL_CLUSTER_TOKEN: your-unique-cluster-token
+      ETCD_INITIAL_CLUSTER: etcd-1=http://etcd-1:2380,etcd-2=http://etcd-2:2380,etcd-3=http://etcd-3:2380
+      ETCD_AUTO_COMPACTION_RETENTION: "1"
+      ETCD_HEARTBEAT_INTERVAL: "500"
+      ETCD_ELECTION_TIMEOUT: "5000"
+      ETCD_GRPC_KEEPALIVE_TIMEOUT: "10s"
+    networks:
+      traefik:
+    deploy:
+      mode: replicated
+      replicas: 3
+      endpoint_mode: dnsrr
+      placement:
+        max_replicas_per_node: 1  # Spread across nodes
+        preferences:
+        - spread: node.id
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      resources:
+        reservations:
+          cpus: '0.2'
+          memory: '64M'
+        limits:
+          cpus: '1.0'
+          memory: '1G'
+  traefik:
+    image: sebieee/traefik:v3.6.7-distrACME-alpine
+    ports:
+    - target: 80
+      published: 80
+    - target: 443
+      published: 443
+    networks:
+      traefik:
+    logging:
+      options:
+        max-size: 1G
+        max-file: 3
     deploy:
       replicas: 1
-      placement:
-        constraints:
-          - node.role == manager
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-    volumes:
-      - redis-data:/data
-    command: redis-server --appendonly yes
-    networks:
-      - traefik-internal
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  # Traefik load balancer - multiple replicas with shared certificate storage
-  traefik:
-    image: traefik:v3
-    deploy:
-      replicas: 3  # Multiple replicas for high availability!
-      placement:
-        constraints:
-          - node.role == manager
       update_config:
-        parallelism: 1
-        delay: 10s
         order: start-first
       restart_policy:
         condition: on-failure
         delay: 5s
-        max_attempts: 3
+        max_attempts: 5
       resources:
+        reservations:
+          cpus: '0.3'
+          memory: '64M'
         limits:
-          cpus: '1'
-          memory: 512M
-    ports:
-      - target: 80
-        published: 80
-        protocol: tcp
-        mode: host  # Use host mode for proper client IP detection
-      - target: 443
-        published: 443
-        protocol: tcp
-        mode: host
-      - target: 8080
-        published: 8080
-        protocol: tcp
-        mode: host
-    environment:
-      # Replace with your DNS provider credentials
-      # This example uses Cloudflare - see https://go-acme.github.io/lego/dns/
-      - CF_API_EMAIL=${CF_API_EMAIL}
-      - CF_API_KEY=${CF_API_KEY}
-    command:
-      # API and Dashboard
-      - "--api=true"
-      - "--api.dashboard=true"
-      - "--api.insecure=true"  # Remove in production, use proper auth
-
-      # Providers
-      - "--providers.swarm=true"
-      - "--providers.swarm.exposedByDefault=false"
-      - "--providers.swarm.network=traefik-public"
-
-      # Entry points
-      - "--entryPoints.web.address=:80"
-      - "--entryPoints.websecure.address=:443"
-
-      # HTTP to HTTPS redirect
-      - "--entryPoints.web.http.redirections.entryPoint.to=websecure"
-      - "--entryPoints.web.http.redirections.entryPoint.scheme=https"
-
-      # ACME Certificate Resolver with Redis distributed storage
-      - "--certificatesresolvers.le.acme.email=${ACME_EMAIL}"
-
-      # --- OPTION 1: HTTP-01 Challenge (works with distributed storage) ---
-      # Use this if you cannot use DNS challenge
-      # Challenge tokens are automatically shared between all replicas via Redis
-      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
-
-      # --- OPTION 2: DNS-01 Challenge (uncomment to use instead) ---
-      # - "--certificatesresolvers.le.acme.dnschallenge.provider=cloudflare"
-      # - "--certificatesresolvers.le.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53"
-
-      # Distributed ACME storage via Redis
-      # This enables multiple Traefik replicas to share certificates and challenge tokens!
-      - "--certificatesresolvers.le.acme.redis.endpoints=redis:6379"
-      - "--certificatesresolvers.le.acme.redis.prefix=traefik/acme"
-      - "--certificatesresolvers.le.acme.redis.lockTimeout=30s"
-
-      # Use staging server for testing (remove for production)
-      # - "--certificatesresolvers.le.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
-
-      # Logging
-      - "--log.level=INFO"
-      - "--accesslog=true"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - traefik-internal
-      - traefik-public
-    depends_on:
-      - redis
-
-  # Example application
-  whoami:
-    image: traefik/whoami
-    deploy:
-      replicas: 3
-      labels:
-        - "traefik.enable=true"
-        - "traefik.http.routers.whoami.rule=Host(`whoami.${DOMAIN}`)"
-        - "traefik.http.routers.whoami.entrypoints=websecure"
-        - "traefik.http.routers.whoami.tls=true"
-        - "traefik.http.routers.whoami.tls.certresolver=le"
-        - "traefik.http.services.whoami.loadbalancer.server.port=80"
-    networks:
-      - traefik-public
+          cpus: '2.0'
+          memory: '512M'
+      placement:
+        constraints:
+        - node.role == worker
 
 networks:
-  traefik-internal:
-    driver: overlay
-    internal: true
-  traefik-public:
-    driver: overlay
-    attachable: true
-
-volumes:
-  redis-data:
-    driver: local
+  traefik:
+    external: true

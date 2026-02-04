@@ -12,23 +12,16 @@ you need distributed storage for ACME certificates to avoid:
 - **Let's Encrypt rate limiting**: Duplicate certificate requests consuming rate limits
 - **Challenge failures**: Wrong replica receiving ACME challenges
 
-Traefik supports three distributed KV store backends for ACME storage:
-
-- **Redis**: Simple, fast, widely used
-- **Consul**: Full-featured service mesh with built-in KV store
-- **etcd**: Distributed key-value store, popular in Kubernetes environments
+Traefik uses **etcd** as the distributed key-value store backend for ACME storage.
+etcd is a distributed, reliable key-value store commonly used in Kubernetes environments.
 
 !!! warning "High Availability Considerations"
-    The KV store itself can become a single point of failure. For production deployments,
-    you should use:
+    etcd can become a single point of failure. For production deployments,
+    you should deploy an **etcd cluster with 3+ nodes** for high availability.
 
-    - **Redis Sentinel** or **Redis Cluster** for Redis HA
-    - **Consul cluster** (3+ nodes) for Consul HA
-    - **etcd cluster** (3+ nodes) for etcd HA
-
-    If the KV store becomes unreachable, Traefik will **automatically fall back to local-only mode**
-    and continue operating. However, in this degraded state, multiple replicas may issue
-    duplicate certificate requests.
+    If etcd becomes unreachable during certificate operations, Traefik will
+    **skip the certificate request** to prevent duplicate requests. HTTP challenges
+    will fall back to local cache.
 
 ## Challenge Types
 
@@ -36,7 +29,7 @@ Traefik supports three distributed KV store backends for ACME storage:
 
 When using HTTP-01 challenge with distributed storage, Traefik automatically:
 
-1. **Shares challenge tokens** across all replicas via the KV store
+1. **Shares challenge tokens** across all replicas via etcd
 2. **Uses distributed locking** to prevent multiple replicas from requesting the same certificate
 3. **Syncs certificates** to all replicas after issuance
 
@@ -50,9 +43,9 @@ certificatesResolvers:
       email: your-email@example.com
       httpChallenge:
         entryPoint: web
-      redis:
+      etcd:
         endpoints:
-          - "redis:6379"
+          - "etcd:2379"
         prefix: "traefik/acme"
 ```
 
@@ -68,9 +61,9 @@ certificatesResolvers:
       email: your-email@example.com
       dnsChallenge:
         provider: cloudflare
-      redis:
+      etcd:
         endpoints:
-          - "redis:6379"
+          - "etcd:2379"
         prefix: "traefik/acme"
 ```
 
@@ -80,107 +73,6 @@ TLS-ALPN-01 challenge also works with distributed storage, using the same distri
 locking mechanism to prevent race conditions.
 
 ## Configuration
-
-### Redis
-
-Redis is the simplest option for distributed ACME storage.
-
-```yaml tab="File (YAML)"
-certificatesResolvers:
-  myresolver:
-    acme:
-      email: your-email@example.com
-      dnsChallenge:
-        provider: cloudflare
-      redis:
-        endpoints:
-          - "redis:6379"
-        # Optional authentication
-        # username: traefik
-        # password: secret
-        # db: 0
-        prefix: "traefik/acme"
-        lockTimeout: 30s
-```
-
-```toml tab="File (TOML)"
-[certificatesResolvers.myresolver.acme]
-  email = "your-email@example.com"
-
-  [certificatesResolvers.myresolver.acme.dnsChallenge]
-    provider = "cloudflare"
-
-  [certificatesResolvers.myresolver.acme.redis]
-    endpoints = ["redis:6379"]
-    # username = "traefik"
-    # password = "secret"
-    # db = 0
-    prefix = "traefik/acme"
-    lockTimeout = "30s"
-```
-
-```bash tab="CLI"
---certificatesresolvers.myresolver.acme.email=your-email@example.com
---certificatesresolvers.myresolver.acme.dnschallenge.provider=cloudflare
---certificatesresolvers.myresolver.acme.redis.endpoints=redis:6379
---certificatesresolvers.myresolver.acme.redis.prefix=traefik/acme
-```
-
-#### Redis Sentinel
-
-For high availability Redis setups using Sentinel:
-
-```yaml tab="File (YAML)"
-certificatesResolvers:
-  myresolver:
-    acme:
-      email: your-email@example.com
-      dnsChallenge:
-        provider: cloudflare
-      redis:
-        endpoints:
-          - "sentinel1:26379"
-          - "sentinel2:26379"
-          - "sentinel3:26379"
-        sentinel:
-          masterName: mymaster
-          # Optional Sentinel authentication
-          # username: sentinel-user
-          # password: sentinel-pass
-```
-
-### Consul
-
-```yaml tab="File (YAML)"
-certificatesResolvers:
-  myresolver:
-    acme:
-      email: your-email@example.com
-      dnsChallenge:
-        provider: cloudflare
-      consul:
-        endpoints:
-          - "consul:8500"
-        # Optional ACL token
-        # token: your-acl-token
-        # namespace: default  # Consul Enterprise only
-        prefix: "traefik/acme"
-        lockTimeout: 30s
-```
-
-```toml tab="File (TOML)"
-[certificatesResolvers.myresolver.acme]
-  email = "your-email@example.com"
-
-  [certificatesResolvers.myresolver.acme.dnsChallenge]
-    provider = "cloudflare"
-
-  [certificatesResolvers.myresolver.acme.consul]
-    endpoints = ["consul:8500"]
-    # token = "your-acl-token"
-    prefix = "traefik/acme"
-    lockTimeout = "30s"
-```
 
 ### etcd
 
@@ -193,7 +85,9 @@ certificatesResolvers:
         provider: cloudflare
       etcd:
         endpoints:
-          - "etcd:2379"
+          - "etcd-1:2379"
+          - "etcd-2:2379"
+          - "etcd-3:2379"
         # Optional authentication
         # username: traefik
         # password: secret
@@ -209,33 +103,44 @@ certificatesResolvers:
     provider = "cloudflare"
 
   [certificatesResolvers.myresolver.acme.etcd]
-    endpoints = ["etcd:2379"]
+    endpoints = ["etcd-1:2379", "etcd-2:2379", "etcd-3:2379"]
     # username = "traefik"
     # password = "secret"
     prefix = "traefik/acme"
     lockTimeout = "30s"
 ```
 
+```bash tab="CLI"
+--certificatesresolvers.myresolver.acme.email=your-email@example.com
+--certificatesresolvers.myresolver.acme.dnschallenge.provider=cloudflare
+--certificatesresolvers.myresolver.acme.etcd.endpoints=etcd-1:2379,etcd-2:2379,etcd-3:2379
+--certificatesresolvers.myresolver.acme.etcd.prefix=traefik/acme
+```
+
 ## Docker Swarm Example
 
-### With HTTP-01 Challenge (Recommended for most users)
+### With HTTP-01 Challenge
 
-Here's a complete Docker Swarm deployment with Redis for distributed ACME storage using HTTP-01 challenge:
+Here's a complete Docker Swarm deployment with etcd for distributed ACME storage using HTTP-01 challenge:
 
 ```yaml
 version: "3.8"
 
 services:
-  redis:
-    image: redis:7-alpine
+  etcd:
+    image: quay.io/coreos/etcd:v3.5
     deploy:
       replicas: 1
       placement:
         constraints:
           - node.role == manager
     volumes:
-      - redis-data:/data
-    command: redis-server --appendonly yes
+      - etcd-data:/etcd-data
+    command:
+      - etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
     networks:
       - traefik-net
 
@@ -256,8 +161,8 @@ services:
       - "--entryPoints.websecure.address=:443"
       - "--certificatesresolvers.le.acme.email=your@email.com"
       - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
-      - "--certificatesresolvers.le.acme.redis.endpoints=redis:6379"
-      - "--certificatesresolvers.le.acme.redis.prefix=traefik/acme"
+      - "--certificatesresolvers.le.acme.etcd.endpoints=etcd:2379"
+      - "--certificatesresolvers.le.acme.etcd.prefix=traefik/acme"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
@@ -280,7 +185,7 @@ networks:
     driver: overlay
 
 volumes:
-  redis-data:
+  etcd-data:
 ```
 
 ### With DNS-01 Challenge
@@ -291,16 +196,20 @@ For DNS-01 challenge using Cloudflare:
 version: "3.8"
 
 services:
-  redis:
-    image: redis:7-alpine
+  etcd:
+    image: quay.io/coreos/etcd:v3.5
     deploy:
       replicas: 1
       placement:
         constraints:
           - node.role == manager
     volumes:
-      - redis-data:/data
-    command: redis-server --appendonly yes
+      - etcd-data:/etcd-data
+    command:
+      - etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
     networks:
       - traefik-net
 
@@ -324,8 +233,8 @@ services:
       - "--entryPoints.websecure.address=:443"
       - "--certificatesresolvers.le.acme.email=your@email.com"
       - "--certificatesresolvers.le.acme.dnschallenge.provider=cloudflare"
-      - "--certificatesresolvers.le.acme.redis.endpoints=redis:6379"
-      - "--certificatesresolvers.le.acme.redis.prefix=traefik/acme"
+      - "--certificatesresolvers.le.acme.etcd.endpoints=etcd:2379"
+      - "--certificatesresolvers.le.acme.etcd.prefix=traefik/acme"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
@@ -348,104 +257,131 @@ networks:
     driver: overlay
 
 volumes:
-  redis-data:
+  etcd-data:
 ```
 
 ## Configuration Options
 
-### Common Options
-
 | Option | Description | Default |
 |--------|-------------|---------|
-| `endpoints` | List of KV store endpoints | Backend-specific |
+| `endpoints` | List of etcd endpoints | `127.0.0.1:2379` |
 | `prefix` | Key prefix for ACME data | `traefik/acme` |
 | `lockTimeout` | Timeout for distributed locks | `30s` |
-| `tls.ca` | CA certificate for TLS | - |
-| `tls.cert` | Client certificate for TLS | - |
-| `tls.key` | Client key for TLS | - |
+| `username` | Username for authentication | - |
+| `password` | Password for authentication | - |
+| `tls.ca` | Path to CA certificate for TLS | - |
+| `tls.cert` | Path to client certificate for TLS | - |
+| `tls.key` | Path to client key for TLS | - |
 | `tls.insecureSkipVerify` | Skip TLS verification | `false` |
 
-### Redis-Specific Options
+## Multiple Resolvers
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `username` | Username for authentication | - |
-| `password` | Password for authentication | - |
-| `db` | Redis database number | `0` |
-| `sentinel.masterName` | Sentinel master name | - |
-| `sentinel.username` | Sentinel username | - |
-| `sentinel.password` | Sentinel password | - |
+If you configure multiple resolvers (e.g., for different ACME providers or accounts),
+Traefik handles them separately within the store.
 
-### Consul-Specific Options
+### Using the Same etcd Instance (Recommended)
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `token` | ACL token | - |
-| `namespace` | Consul namespace (Enterprise) | - |
+When multiple resolvers point to the same etcd instance with the **same prefix**,
+Traefik reuses the connection and efficiently manages resources. Data is automatically
+namespaced by the resolver name (e.g., `<prefix>/data/<resolverName>`).
 
-### etcd-Specific Options
+```yaml
+certificatesResolvers:
+  # First resolver (Let's Encrypt Staging)
+  staging:
+    acme:
+      email: ...
+      etcd:
+        endpoints: ["etcd:2379"]
+        prefix: "traefik/acme"  # Same prefix
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `username` | Username for authentication | - |
-| `password` | Password for authentication | - |
+  # Second resolver (Let's Encrypt Production)
+  production:
+    acme:
+      email: ...
+      etcd:
+        endpoints: ["etcd:2379"]
+        prefix: "traefik/acme"  # Same prefix
+```
+
+### Using Different etcd Clusters
+
+If you need to use different etcd clusters, you **must use different prefixes**.
+Traefik uses the prefix to identify shared connections, so resolvers with the same prefix
+will share the same etcd connection (even if endpoints differ in configuration).
+
+```yaml
+certificatesResolvers:
+  # First resolver (Cluster A)
+  resolverA:
+    acme:
+      etcd:
+        endpoints: ["etcd-cluster-a:2379"]
+        prefix: "traefik/acme-a"  # Different prefix
+
+  # Second resolver (Cluster B)
+  resolverB:
+    acme:
+      etcd:
+        endpoints: ["etcd-cluster-b:2379"]
+        prefix: "traefik/acme-b"  # Different prefix
+```
 
 ## How It Works
 
 1. **Distributed Locking**: Before obtaining a certificate, Traefik acquires a distributed lock
    for the domain. This ensures only one replica handles certificate operations for each domain.
 
-2. **Shared Storage**: Certificates are stored in the KV store and automatically synced to all replicas.
+2. **Shared Storage**: Certificates are stored in etcd and automatically synced to all replicas.
 
-3. **Watch for Updates**: Replicas watch the KV store for changes and automatically load new
+3. **Watch for Updates**: Replicas watch etcd for changes and automatically load new
    certificates when another replica obtains them.
 
-4. **Compression**: Certificate data is compressed before storage to reduce KV store usage.
+4. **Compression**: Certificate data is compressed before storage to reduce storage usage.
 
 ## Resilience and Fallback Behavior
 
-Traefik is designed to be resilient when the KV store becomes unavailable:
+Traefik handles etcd unavailability gracefully:
 
-### KV Store Unreachable
+### etcd Unreachable
 
-When the KV store is down or unreachable:
+When etcd is down or unreachable:
 
-- **Certificate Resolution**: Traefik will fall back to **local-only mode** and continue
-  processing certificate requests. A warning is logged, but operations proceed.
+- **Certificate Requests**: Traefik **skips** new certificate requests if it cannot acquire
+  a distributed lock. This prevents duplicate requests across replicas.
 
-- **HTTP Challenge Tokens**: The distributed challenge provider will use its **local cache**
-  to serve challenge responses. Tokens are always cached locally in addition to the KV store.
+- **HTTP Challenge Tokens**: The distributed challenge provider uses its **local cache**
+  to serve challenge responses. Tokens are always cached locally in addition to etcd.
 
 - **Existing Certificates**: Certificates loaded at startup remain in memory and continue to work.
 
 ### Recommendations for Production
 
-To minimize the impact of KV store failures:
+To minimize the impact of etcd failures:
 
-1. **Use Redis Sentinel or Cluster** for automatic failover
-2. **Deploy 3+ node Consul/etcd clusters** for quorum-based HA
-3. **Monitor KV store health** and set up alerts
-4. **Consider read replicas** for Redis to distribute load
+1. **Deploy a 3+ node etcd cluster** for quorum-based high availability
+2. **Monitor etcd health** and set up alerts
+3. **Use TLS** for secure communication between Traefik and etcd
+4. **Regular backups** of etcd data for disaster recovery
 
 ### What Happens During Degraded Mode
 
 | Scenario | Behavior |
 |----------|----------|
-| KV store down during cert request | Proceeds with local-only mode (may cause duplicates) |
-| KV store down during challenge | Uses local cache to respond |
-| KV store recovers | Automatically reconnects and syncs |
-| Lock already held | Skips cert request (correct behavior) |
+| etcd down during cert request | Skips request (prevents duplicates) |
+| etcd down during challenge | Uses local cache to respond |
+| etcd recovers | Automatically reconnects and syncs |
+| Lock already held by another replica | Waits up to 60s, then checks if cert was obtained |
 
 ## Migration from Local Storage
 
 To migrate from local file storage to distributed storage:
 
 1. Stop all Traefik replicas except one
-2. Configure the distributed store on the remaining replica
-3. Start it - certificates will be read from the local file and stored in the KV store
+2. Configure etcd on the remaining replica
+3. Start it - certificates will be read from the local file and stored in etcd
 4. Stop the replica and remove the `storage` option
-5. Start all replicas with the distributed store configuration
+5. Start all replicas with the etcd configuration
 
-!!! warning "Mutual Exclusivity"
-    You can only configure one distributed store at a time. The `storage` (file) option
-    is ignored when a distributed store is configured.
+!!! note "File Storage Override"
+    The `storage` (file) option is ignored when etcd is configured.

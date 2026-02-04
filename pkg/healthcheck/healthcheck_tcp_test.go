@@ -466,7 +466,7 @@ func TestServiceTCPHealthChecker_Launch(t *testing.T) {
 				},
 			}
 
-			lb := &testLoadBalancer{}
+			lb := &testLoadBalancer{RWMutex: &sync.RWMutex{}}
 			serviceInfo := &truntime.TCPServiceInfo{}
 
 			service := NewServiceTCPHealthChecker(ctx, test.config, lb, serviceInfo, targets, "serviceName")
@@ -484,12 +484,18 @@ func TestServiceTCPHealthChecker_Launch(t *testing.T) {
 			for i := range test.server.StatusSequence {
 				test.server.Next()
 
+				lb.RLock()
 				initialUpserted := lb.numUpsertedServers
 				initialRemoved := lb.numRemovedServers
+				lb.RUnlock()
 
 				for time.Now().Before(deadline) {
 					time.Sleep(5 * time.Millisecond)
-					if lb.numUpsertedServers > initialUpserted || lb.numRemovedServers > initialRemoved {
+					lb.RLock()
+					upserted := lb.numUpsertedServers
+					removed := lb.numRemovedServers
+					lb.RUnlock()
+					if upserted > initialUpserted || removed > initialRemoved {
 						// Stop the health checker immediately after the last expected sequence completes
 						// to prevent extra health checks from firing and modifying the counters.
 						if i == len(test.server.StatusSequence)-1 {
@@ -500,8 +506,10 @@ func TestServiceTCPHealthChecker_Launch(t *testing.T) {
 				}
 			}
 
+			lb.RLock()
 			assert.Equal(t, test.expNumRemovedServers, lb.numRemovedServers, "removed servers")
 			assert.Equal(t, test.expNumUpsertedServers, lb.numUpsertedServers, "upserted servers")
+			lb.RUnlock()
 			assert.Equal(t, map[string]string{test.server.Addr.String(): test.targetStatus}, serviceInfo.GetAllStatus())
 		})
 	}

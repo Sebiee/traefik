@@ -20,21 +20,19 @@ type Store interface {
 	SaveCertificates(resolverName string, certificates []*CertAndStore) error
 }
 
-// DistributedStore extends Store with distributed locking capabilities.
-// This interface is implemented by KV store backends (Redis, Consul, etcd)
-// to enable multiple Traefik replicas to safely share ACME certificates.
+// DistributedStore extends Store with distributed locking for multi-replica deployments.
 type DistributedStore interface {
 	Store
 
-	// AcquireLock attempts to acquire a distributed lock for the given domain.
-	// This prevents multiple Traefik instances from simultaneously requesting
-	// certificates for the same domain.
-	AcquireLock(ctx context.Context, domain string) (store.Locker, error)
+	// AcquireLock acquires a distributed lock for certificate operations on a domain.
+	AcquireLock(ctx context.Context, resolverName, domain string) (store.Locker, error)
 
-	// ReleaseLock releases the distributed lock for the given domain.
-	ReleaseLock(domain string) error
+	// ReleaseLock releases the distributed lock.
+	ReleaseLock(resolverName, domain string) error
 
-	// Watch sets up a watch on the store for certificate updates.
-	// This allows Traefik instances to sync certificate updates from other instances.
+	// Watch subscribes to certificate updates from other replicas.
 	Watch(ctx context.Context, resolverName string) (<-chan struct{}, error)
+
+	// GetCertificatesFresh fetches certificates bypassing cache.
+	GetCertificatesFresh(resolverName string) ([]*CertAndStore, error)
 }

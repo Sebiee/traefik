@@ -21,6 +21,8 @@ import (
 func init() {
 	// hide the first logs before the setup of the logger.
 	zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+	// Use nanosecond precision for timestamps
+	zerolog.TimeFieldFormat = time.RFC3339Nano
 }
 
 func setupLogger(ctx context.Context, staticConfiguration *static.Configuration) error {
@@ -83,7 +85,7 @@ func getLogWriter(staticConfiguration *static.Configuration) io.Writer {
 	if staticConfiguration.Log == nil || staticConfiguration.Log.Format != "json" {
 		w = zerolog.ConsoleWriter{
 			Out:        w,
-			TimeFormat: time.RFC3339,
+			TimeFormat: time.RFC3339Nano,
 			NoColor:    staticConfiguration.Log != nil && (staticConfiguration.Log.NoColor || len(staticConfiguration.Log.FilePath) > 0),
 		}
 	}

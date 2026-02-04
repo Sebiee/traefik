@@ -21,24 +21,6 @@ func TestKVStoreConfig_SetDefaults(t *testing.T) {
 	assert.Equal(t, 30*time.Second, config.LockTimeout)
 }
 
-func TestRedisStoreConfig_SetDefaults(t *testing.T) {
-	config := &RedisStoreConfig{}
-	config.SetDefaults()
-
-	assert.Equal(t, []string{"localhost:6379"}, config.Endpoints)
-	assert.Equal(t, "traefik/acme", config.Prefix)
-	assert.Equal(t, 30*time.Second, config.LockTimeout)
-}
-
-func TestConsulStoreConfig_SetDefaults(t *testing.T) {
-	config := &ConsulStoreConfig{}
-	config.SetDefaults()
-
-	assert.Equal(t, []string{"127.0.0.1:8500"}, config.Endpoints)
-	assert.Equal(t, "traefik/acme", config.Prefix)
-	assert.Equal(t, 30*time.Second, config.LockTimeout)
-}
-
 func TestEtcdStoreConfig_SetDefaults(t *testing.T) {
 	config := &EtcdStoreConfig{}
 	config.SetDefaults()
@@ -184,7 +166,7 @@ func TestKVStore_AcquireLock_Success(t *testing.T) {
 	mockLocker := NewMockLocker()
 
 	lockChan := make(chan struct{})
-	mockClient.On("NewLock", mock.Anything, "test/prefix/locks/example.com", mock.Anything).Return(mockLocker, nil)
+	mockClient.On("NewLock", mock.Anything, "test/prefix/myresolver/locks/example.com", mock.Anything).Return(mockLocker, nil)
 	mockLocker.On("Lock", mock.Anything).Return((<-chan struct{})(lockChan), nil)
 
 	kvStore := &KVStore{
@@ -195,7 +177,7 @@ func TestKVStore_AcquireLock_Success(t *testing.T) {
 		locks:       make(map[string]store.Locker),
 	}
 
-	locker, err := kvStore.AcquireLock(t.Context(), "example.com")
+	locker, err := kvStore.AcquireLock(t.Context(), "myresolver", "example.com")
 
 	require.NoError(t, err)
 	assert.NotNil(t, locker)
@@ -206,7 +188,7 @@ func TestKVStore_AcquireLock_Success(t *testing.T) {
 func TestKVStore_AcquireLock_Failure(t *testing.T) {
 	mockClient := &MockKVClient{}
 
-	mockClient.On("NewLock", mock.Anything, "test/prefix/locks/example.com", mock.Anything).
+	mockClient.On("NewLock", mock.Anything, "test/prefix/myresolver/locks/example.com", mock.Anything).
 		Return(nil, errors.New("connection refused"))
 
 	kvStore := &KVStore{
@@ -217,7 +199,7 @@ func TestKVStore_AcquireLock_Failure(t *testing.T) {
 		locks:       make(map[string]store.Locker),
 	}
 
-	locker, err := kvStore.AcquireLock(t.Context(), "example.com")
+	locker, err := kvStore.AcquireLock(t.Context(), "myresolver", "example.com")
 
 	require.Error(t, err)
 	assert.Nil(t, locker)
@@ -229,7 +211,7 @@ func TestKVStore_AcquireLock_LockContention(t *testing.T) {
 	mockClient := &MockKVClient{}
 	mockLocker := NewMockLocker()
 
-	mockClient.On("NewLock", mock.Anything, "test/prefix/locks/example.com", mock.Anything).Return(mockLocker, nil)
+	mockClient.On("NewLock", mock.Anything, "test/prefix/myresolver/locks/example.com", mock.Anything).Return(mockLocker, nil)
 	mockLocker.On("Lock", mock.Anything).Return(nil, errors.New("lock already held"))
 
 	kvStore := &KVStore{
@@ -240,7 +222,7 @@ func TestKVStore_AcquireLock_LockContention(t *testing.T) {
 		locks:       make(map[string]store.Locker),
 	}
 
-	locker, err := kvStore.AcquireLock(t.Context(), "example.com")
+	locker, err := kvStore.AcquireLock(t.Context(), "myresolver", "example.com")
 
 	require.Error(t, err)
 	assert.Nil(t, locker)
@@ -261,10 +243,10 @@ func TestKVStore_ReleaseLock_Success(t *testing.T) {
 		lock:        sync.RWMutex{},
 	}
 
-	// Add a lock to release
-	kvStore.locks["example.com"] = mockLocker
+	// Add a lock to release (key is resolver/domain)
+	kvStore.locks["myresolver/example.com"] = mockLocker
 
-	err := kvStore.ReleaseLock("example.com")
+	err := kvStore.ReleaseLock("myresolver", "example.com")
 
 	require.NoError(t, err)
 	assert.Empty(t, kvStore.locks)
@@ -281,7 +263,7 @@ func TestKVStore_ReleaseLock_NoExistingLock(t *testing.T) {
 	}
 
 	// No lock exists - should return nil (graceful handling)
-	err := kvStore.ReleaseLock("nonexistent.com")
+	err := kvStore.ReleaseLock("myresolver", "nonexistent.com")
 
 	require.NoError(t, err)
 }
@@ -298,10 +280,10 @@ func TestKVStore_ReleaseLock_UnlockFailure(t *testing.T) {
 		lock:        sync.RWMutex{},
 	}
 
-	// Add a lock to release
-	kvStore.locks["example.com"] = mockLocker
+	// Add a lock to release (key is resolver/domain)
+	kvStore.locks["myresolver/example.com"] = mockLocker
 
-	err := kvStore.ReleaseLock("example.com")
+	err := kvStore.ReleaseLock("myresolver", "example.com")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to release lock")
@@ -322,15 +304,15 @@ func TestKVStore_DoubleReleaseLock_Idempotent(t *testing.T) {
 		lock:        sync.RWMutex{},
 	}
 
-	// Add a lock to release
-	kvStore.locks["example.com"] = mockLocker
+	// Add a lock to release (key is resolver/domain)
+	kvStore.locks["myresolver/example.com"] = mockLocker
 
 	// First release should succeed
-	err := kvStore.ReleaseLock("example.com")
+	err := kvStore.ReleaseLock("myresolver", "example.com")
 	require.NoError(t, err)
 
 	// Second release should be idempotent (no error)
-	err = kvStore.ReleaseLock("example.com")
+	err = kvStore.ReleaseLock("myresolver", "example.com")
 	require.NoError(t, err)
 
 	mockLocker.AssertExpectations(t)
@@ -379,11 +361,11 @@ func TestKVStore_ConcurrentLockOperations(t *testing.T) {
 	var wg sync.WaitGroup
 	domains := []string{"a.com", "b.com", "c.com", "d.com", "e.com"}
 
-	// Add mock lockers
+	// Add mock lockers (key is resolver/domain)
 	for _, domain := range domains {
 		mockLocker := NewMockLocker()
 		mockLocker.On("Unlock", mock.Anything).Return(nil)
-		kvStore.locks[domain] = mockLocker
+		kvStore.locks["myresolver/"+domain] = mockLocker
 	}
 
 	// Release locks concurrently
@@ -391,7 +373,7 @@ func TestKVStore_ConcurrentLockOperations(t *testing.T) {
 		wg.Add(1)
 		go func(d string) {
 			defer wg.Done()
-			_ = kvStore.ReleaseLock(d)
+			_ = kvStore.ReleaseLock("myresolver", d)
 		}(domain)
 	}
 

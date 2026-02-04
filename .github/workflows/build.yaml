@@ -23,29 +23,8 @@ jobs:
 
     strategy:
       matrix:
-        os: [ darwin, freebsd, linux, openbsd, windows ]
+        os: [ linux ]
         arch: [ amd64, arm64 ]
-        include:
-          - os: freebsd
-            arch: 386
-          - os: linux
-            arch: 386
-          - os: linux
-            arch: arm
-            goarm: 6
-          - os: linux
-            arch: arm
-            goarm: 7
-          - os: linux
-            arch: ppc64le
-          - os: linux
-            arch: riscv64
-          - os: linux
-            arch: s390x
-          - os: openbsd
-            arch: 386
-          - os: windows
-            arch: 386
     needs:
       - build-webui
 

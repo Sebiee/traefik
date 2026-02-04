@@ -7,8 +7,6 @@ services:
       - http://0.0.0.0:2379
       - --advertise-client-urls
       - http://0.0.0.0:2380
-    ports:
-      - "2379:2379"
 
   pebble:
     image: ghcr.io/letsencrypt/pebble:2.8.0
@@ -16,7 +14,15 @@ services:
       - --dnsserver
       - host.docker.internal:5053
     environment:
-      # https://github.com/letsencrypt/pebble#testing-at-full-speed
       PEBBLE_VA_NOSLEEP: 1
-      # https://github.com/letsencrypt/pebble#invalid-anti-replay-nonce-errors
       PEBBLE_WFE_NONCEREJECT: 0
+
+  lb:
+    image: nginx:alpine
+    ports:
+      - "5002:5002"
+      - "5001:5001"
+    volumes:
+      - ./thundering_herd_lb.conf:/etc/nginx/nginx.conf:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

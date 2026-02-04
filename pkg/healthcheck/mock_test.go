@@ -170,6 +170,10 @@ type testLoadBalancer struct {
 }
 
 func (lb *testLoadBalancer) SetStatus(ctx context.Context, childName string, up bool) {
+	if lb.RWMutex != nil {
+		lb.Lock()
+		defer lb.Unlock()
+	}
 	if up {
 		lb.numUpsertedServers++
 	} else {

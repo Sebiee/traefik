@@ -1,0 +1,59 @@
+[global]
+  checkNewVersion = false
+  sendAnonymousUsage = false
+
+[log]
+  level = "DEBUG"
+  noColor = true
+
+[ping]
+
+[entryPoints]
+  [entryPoints.web]
+    address = "{{ .PortHTTP }}"
+  [entryPoints.websecure]
+    address = "{{ .PortHTTPS }}"
+  [entryPoints.traefik]
+    address = "{{ .PortAPI }}"
+
+[certificatesResolvers.default.acme]
+  email = "test@traefik.io"
+  caServer = "{{ .CAServer }}"
+  # Very short certificate duration to allow quick renewal testing
+  # With < 24 hours, renewPeriod = 20 minutes, checkInterval = 1 minute
+  certificatesDuration = 1
+  # Increased timeouts for resilience testing (handles etcd reconnection delays)
+  clientTimeout = "3m"
+  clientResponseHeaderTimeout = "90s"
+
+  [certificatesResolvers.default.acme.httpChallenge]
+    entryPoint = "web"
+
+  [certificatesResolvers.default.acme.etcd]
+    endpoints = ["{{ .EtcdAddress }}"]
+    prefix = "traefik/acme"
+    # Lock timeout for distributed scenarios
+    lockTimeout = "2m"
+
+[api]
+  insecure = true
+
+[providers.file]
+  filename = "{{ .SelfFilename }}"
+
+## dynamic configuration ##
+
+[http.services]
+  [http.services.test.loadBalancer]
+    [[http.services.test.loadBalancer.servers]]
+      url = "http://127.0.0.1:9010"
+
+[http.routers]
+{{range $i, $domain := .Domains }}
+  [http.routers.router{{ $i }}]
+    entryPoints = ["websecure"]
+    rule = "Host(`{{ $domain }}`)"
+    service = "test"
+    [http.routers.router{{ $i }}.tls]
+      certResolver = "default"
+{{end}}

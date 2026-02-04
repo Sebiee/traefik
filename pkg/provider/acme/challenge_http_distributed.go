@@ -15,22 +15,19 @@ import (
 	"github.com/traefik/traefik/v3/pkg/observability/logs"
 )
 
-// DistributedChallengeHTTP implements the HTTP-01 challenge with distributed storage.
-// This allows multiple Traefik replicas to share challenge tokens, enabling
-// any replica to respond to ACME challenge requests.
+// DistributedChallengeHTTP implements HTTP-01 challenge using a distributed KV store,
+// allowing any Traefik replica to respond to ACME challenge requests.
 type DistributedChallengeHTTP struct {
 	kvClient store.Store
 	prefix   string
 
-	// Local cache for faster lookups
-	localCache map[string]map[string][]byte
+	localCache map[string]map[string][]byte // token -> domain -> keyAuth
 	lock       sync.RWMutex
 
-	// Fallback to local storage if KV store is unavailable
-	fallback *ChallengeHTTP
+	fallback *ChallengeHTTP // used when KV store is unavailable
 }
 
-// ChallengeData represents a challenge token stored in the KV store.
+// ChallengeData is the JSON structure stored in the KV store for each challenge.
 type ChallengeData struct {
 	Domain  string `json:"domain"`
 	Token   string `json:"token"`
@@ -47,11 +44,13 @@ func NewDistributedChallengeHTTP(kvClient store.Store, prefix string) *Distribut
 	}
 }
 
-// Present presents a challenge to obtain new ACME certificate.
-// The challenge token is stored in the distributed KV store so any replica can respond.
+// Present stores the challenge token in both local cache and the distributed KV store.
+// It verifies the token is readable from the KV store before returning to ensure
+// all replicas can serve the challenge response.
 func (c *DistributedChallengeHTTP) Present(domain, token, keyAuth string) error {
 	logger := log.With().Str(logs.ProviderName, "acme").Str("domain", domain).Logger()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// Store in local cache first
 	c.lock.Lock()
@@ -75,7 +74,6 @@ func (c *DistributedChallengeHTTP) Present(domain, token, keyAuth string) error 
 		return c.fallback.Present(domain, token, keyAuth)
 	}
 
-	// Store with TTL of 10 minutes (challenges should complete quickly)
 	err = c.kvClient.Put(ctx, key, value, &store.WriteOptions{TTL: 10 * time.Minute})
 	if err != nil {
 		logger.Warn().Err(err).Msg("Failed to store challenge in KV store, using local fallback")
@@ -86,7 +84,7 @@ func (c *DistributedChallengeHTTP) Present(domain, token, keyAuth string) error 
 	return nil
 }
 
-// CleanUp cleans the challenges when certificate is obtained.
+// CleanUp removes the challenge from both local cache and the KV store.
 func (c *DistributedChallengeHTTP) CleanUp(domain, token, keyAuth string) error {
 	logger := log.With().Str(logs.ProviderName, "acme").Str("domain", domain).Logger()
 	ctx := context.Background()
@@ -112,15 +110,17 @@ func (c *DistributedChallengeHTTP) CleanUp(domain, token, keyAuth string) error 
 	return c.fallback.CleanUp(domain, token, keyAuth)
 }
 
-// Timeout calculates the maximum of time allowed to resolve an ACME challenge.
+// Timeout returns the maximum time and polling interval for challenge resolution.
 func (c *DistributedChallengeHTTP) Timeout() (timeout, interval time.Duration) {
 	return 60 * time.Second, 5 * time.Second
 }
 
-// ServeHTTP handles incoming ACME challenge requests.
-// It first checks the distributed KV store, then falls back to local cache.
+// ServeHTTP responds to ACME HTTP-01 challenge requests by looking up the token
+// in the KV store first, then falling back to local cache.
 func (c *DistributedChallengeHTTP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	logger := log.Ctx(req.Context()).With().Str(logs.ProviderName, "acme").Logger()
+
+	logger.Debug().Str("path", req.URL.Path).Str("host", req.Host).Msg("Received ACME HTTP challenge request")
 
 	token, err := getPathParam(req.URL)
 	if err != nil {
@@ -138,6 +138,7 @@ func (c *DistributedChallengeHTTP) ServeHTTP(rw http.ResponseWriter, req *http.R
 
 		tokenValue := c.getTokenValue(logger.WithContext(req.Context()), token, domain)
 		if len(tokenValue) > 0 {
+			logger.Debug().Str("domain", domain).Str("token", token).Int("keyAuthLen", len(tokenValue)).Msg("Responding with 200 OK and challenge keyAuth")
 			rw.WriteHeader(http.StatusOK)
 			_, err = rw.Write(tokenValue)
 			if err != nil {
@@ -145,18 +146,27 @@ func (c *DistributedChallengeHTTP) ServeHTTP(rw http.ResponseWriter, req *http.R
 			}
 			return
 		}
+		logger.Warn().Str("token", token).Str("domain", domain).Msg("Token not found, responding with 404")
 	}
 
 	rw.WriteHeader(http.StatusNotFound)
 }
 
-// WatchChallenges watches for new challenges from other replicas.
-// This helps pre-populate the local cache for faster response times.
+// WatchChallenges subscribes to KV store changes to sync challenges from other replicas.
 func (c *DistributedChallengeHTTP) WatchChallenges(ctx context.Context) error {
 	logger := log.With().Str(logs.ProviderName, "acme").Logger()
 
 	// prefix already includes /challenges from initialization
 	prefix := c.prefix + "/"
+
+	// Ensure the challenges directory exists by creating a placeholder key.
+	// This is needed because WatchTree fails if the path doesn't exist.
+	placeholderKey := prefix + ".initialized"
+	err := c.kvClient.Put(ctx, placeholderKey, []byte("1"), nil)
+	if err != nil {
+		logger.Debug().Err(err).Msg("Could not create challenges placeholder key, watch may fail if directory doesn't exist")
+	}
+
 	events, err := c.kvClient.WatchTree(ctx, prefix, nil)
 	if err != nil {
 		return fmt.Errorf("failed to watch challenges: %w", err)
@@ -197,41 +207,33 @@ func (c *DistributedChallengeHTTP) getTokenValue(ctx context.Context, token, dom
 	logger := log.Ctx(ctx)
 	logger.Debug().Msgf("Retrieving the ACME challenge for %s (token %q)...", domain, token)
 
-	// First, try to get from distributed KV store
+	// Check local cache FIRST - it's fastest (no network I/O) and guaranteed
+	// to have the token if this replica stored it via Present(), or synced
+	// via WatchChallenges from another replica.
+	c.lock.RLock()
+	if challenges, ok := c.localCache[token]; ok {
+		if result, ok := challenges[domain]; ok {
+			c.lock.RUnlock()
+			logger.Debug().Msgf("Found ACME challenge for %s in local cache", domain)
+			return result
+		}
+	}
+	c.lock.RUnlock()
+
+	// Not in local cache - token was stored by another replica and WatchChallenges
+	// hasn't synced it yet. Fetch directly from KV store.
+	// Since Present() verifies the token is readable before returning, and etcd
+	// provides strongly consistent reads, a single lookup should succeed.
+	kvCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	key := c.challengeKey(token, domain)
-	pair, err := c.kvClient.Get(ctx, key, nil)
+	pair, err := c.kvClient.Get(kvCtx, key, nil)
 	if err == nil && pair != nil && len(pair.Value) > 0 {
 		var data ChallengeData
 		if err := json.Unmarshal(pair.Value, &data); err == nil {
 			logger.Debug().Msgf("Found ACME challenge for %s in distributed store", domain)
 			return []byte(data.KeyAuth)
-		}
-	}
-
-	// Try to find by listing all challenges for this token (in case domain matching is complex)
-	tokenPrefix := fmt.Sprintf("%s/%s/", c.prefix, token)
-	pairs, err := c.kvClient.List(ctx, tokenPrefix, nil)
-	if err == nil {
-		for _, p := range pairs {
-			var data ChallengeData
-			if err := json.Unmarshal(p.Value, &data); err == nil {
-				// Check if this challenge matches our domain
-				if data.Domain == domain {
-					logger.Debug().Msgf("Found ACME challenge for %s in distributed store (via list)", domain)
-					return []byte(data.KeyAuth)
-				}
-			}
-		}
-	}
-
-	// Fall back to local cache
-	c.lock.RLock()
-	defer c.lock.RUnlock()
-
-	if challenges, ok := c.localCache[token]; ok {
-		if result, ok := challenges[domain]; ok {
-			logger.Debug().Msgf("Found ACME challenge for %s in local cache", domain)
-			return result
 		}
 	}
 

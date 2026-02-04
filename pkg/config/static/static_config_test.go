@@ -311,38 +311,6 @@ func TestConfiguration_ValidateConfiguration_ACMEKVStores(t *testing.T) {
 			expectedErr: "",
 		},
 		{
-			desc: "ACME with Redis only (valid)",
-			conf: &Configuration{
-				Providers: &Providers{},
-				CertificatesResolvers: map[string]CertificateResolver{
-					"myresolver": {
-						ACME: &acme.Configuration{
-							Redis: &acme.RedisStoreConfig{
-								Endpoints: []string{"localhost:6379"},
-							},
-						},
-					},
-				},
-			},
-			expectedErr: "",
-		},
-		{
-			desc: "ACME with Consul only (valid)",
-			conf: &Configuration{
-				Providers: &Providers{},
-				CertificatesResolvers: map[string]CertificateResolver{
-					"myresolver": {
-						ACME: &acme.Configuration{
-							Consul: &acme.ConsulStoreConfig{
-								Endpoints: []string{"localhost:8500"},
-							},
-						},
-					},
-				},
-			},
-			expectedErr: "",
-		},
-		{
 			desc: "ACME with Etcd only (valid)",
 			conf: &Configuration{
 				Providers: &Providers{},
@@ -357,85 +325,6 @@ func TestConfiguration_ValidateConfiguration_ACMEKVStores(t *testing.T) {
 				},
 			},
 			expectedErr: "",
-		},
-		{
-			desc: "ACME with Redis and Consul (mutually exclusive error)",
-			conf: &Configuration{
-				Providers: &Providers{},
-				CertificatesResolvers: map[string]CertificateResolver{
-					"myresolver": {
-						ACME: &acme.Configuration{
-							Redis: &acme.RedisStoreConfig{
-								Endpoints: []string{"localhost:6379"},
-							},
-							Consul: &acme.ConsulStoreConfig{
-								Endpoints: []string{"localhost:8500"},
-							},
-						},
-					},
-				},
-			},
-			expectedErr: "only one distributed store (redis, consul, etcd) can be configured at a time",
-		},
-		{
-			desc: "ACME with Redis and Etcd (mutually exclusive error)",
-			conf: &Configuration{
-				Providers: &Providers{},
-				CertificatesResolvers: map[string]CertificateResolver{
-					"myresolver": {
-						ACME: &acme.Configuration{
-							Redis: &acme.RedisStoreConfig{
-								Endpoints: []string{"localhost:6379"},
-							},
-							Etcd: &acme.EtcdStoreConfig{
-								Endpoints: []string{"localhost:2379"},
-							},
-						},
-					},
-				},
-			},
-			expectedErr: "only one distributed store (redis, consul, etcd) can be configured at a time",
-		},
-		{
-			desc: "ACME with Consul and Etcd (mutually exclusive error)",
-			conf: &Configuration{
-				Providers: &Providers{},
-				CertificatesResolvers: map[string]CertificateResolver{
-					"myresolver": {
-						ACME: &acme.Configuration{
-							Consul: &acme.ConsulStoreConfig{
-								Endpoints: []string{"localhost:8500"},
-							},
-							Etcd: &acme.EtcdStoreConfig{
-								Endpoints: []string{"localhost:2379"},
-							},
-						},
-					},
-				},
-			},
-			expectedErr: "only one distributed store (redis, consul, etcd) can be configured at a time",
-		},
-		{
-			desc: "ACME with all three KV stores (mutually exclusive error)",
-			conf: &Configuration{
-				Providers: &Providers{},
-				CertificatesResolvers: map[string]CertificateResolver{
-					"myresolver": {
-						ACME: &acme.Configuration{
-							Redis: &acme.RedisStoreConfig{
-								Endpoints: []string{"localhost:6379"},
-							},
-							Consul: &acme.ConsulStoreConfig{
-								Endpoints: []string{"localhost:8500"},
-							},
-							Etcd: &acme.EtcdStoreConfig{
-								Endpoints: []string{"localhost:2379"},
-							},
-						},
-					},
-				},
-			},
-			expectedErr: "only one distributed store (redis, consul, etcd) can be configured at a time",
 		},
 		{
 			desc: "ACME with no storage and no KV store (error)",
@@ -459,38 +348,14 @@ func TestConfiguration_ValidateConfiguration_ACMEKVStores(t *testing.T) {
 					"myresolver": {
 						ACME: &acme.Configuration{
 							Storage: "",
-							Redis: &acme.RedisStoreConfig{
-								Endpoints: []string{"localhost:6379"},
+							Etcd: &acme.EtcdStoreConfig{
+								Endpoints: []string{"localhost:2379"},
 							},
 						},
 					},
 				},
 			},
 			expectedErr: "",
-		},
-		{
-			desc: "Multiple resolvers - one valid, one with error",
-			conf: &Configuration{
-				Providers: &Providers{},
-				CertificatesResolvers: map[string]CertificateResolver{
-					"valid-resolver": {
-						ACME: &acme.Configuration{
-							Storage: "/path/to/acme.json",
-						},
-					},
-					"invalid-resolver": {
-						ACME: &acme.Configuration{
-							Redis: &acme.RedisStoreConfig{
-								Endpoints: []string{"localhost:6379"},
-							},
-							Consul: &acme.ConsulStoreConfig{
-								Endpoints: []string{"localhost:8500"},
-							},
-						},
-					},
-				},
-			},
-			expectedErr: "only one distributed store (redis, consul, etcd) can be configured at a time",
 		},
 		{
 			desc: "ACME and Tailscale mutually exclusive",
@@ -525,8 +390,8 @@ func TestConfiguration_ValidateConfiguration_ACMEKVStores(t *testing.T) {
 					"myresolver": {
 						ACME: &acme.Configuration{
 							Storage: "/path/to/acme.json",
-							Redis: &acme.RedisStoreConfig{
-								Endpoints: []string{"localhost:6379"},
+							Etcd: &acme.EtcdStoreConfig{
+								Endpoints: []string{"localhost:2379"},
 							},
 						},
 					},
@@ -557,20 +422,6 @@ func TestConfiguration_ValidateConfiguration_MultipleResolvers(t *testing.T) {
 	conf := &Configuration{
 		Providers: &Providers{},
 		CertificatesResolvers: map[string]CertificateResolver{
-			"redis-resolver": {
-				ACME: &acme.Configuration{
-					Redis: &acme.RedisStoreConfig{
-						Endpoints: []string{"localhost:6379"},
-					},
-				},
-			},
-			"consul-resolver": {
-				ACME: &acme.Configuration{
-					Consul: &acme.ConsulStoreConfig{
-						Endpoints: []string{"localhost:8500"},
-					},
-				},
-			},
 			"etcd-resolver": {
 				ACME: &acme.Configuration{
 					Etcd: &acme.EtcdStoreConfig{

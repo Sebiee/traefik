@@ -399,62 +399,49 @@ func getHTTPChallengeHandler(acmeProviders []*acme.Provider, httpChallengeProvid
 
 	for _, p := range acmeProviders {
 		if p != nil && p.HTTPChallenge != nil {
-			// Check if the provider uses a distributed challenge provider
-			if distChallenge, ok := p.HTTPChallengeProvider.(*acme.DistributedChallengeHTTP); ok {
-				handlers = append(handlers, distChallenge)
+			if resilientChallenge, ok := p.HTTPChallengeProvider.(*acme.ResilientChallengeHTTP); ok {
+				handlers = append(handlers, resilientChallenge)
 			} else if stdChallenge, ok := p.HTTPChallengeProvider.(*acme.ChallengeHTTP); ok {
 				handlers = append(handlers, stdChallenge)
 			}
 		}
 	}
 
-	// If we have multiple handlers, create a composite handler
 	if len(handlers) > 1 {
 		return &compositeHTTPChallengeHandler{handlers: handlers, fallback: httpChallengeProvider}
 	}
 
-	// If we have one handler, use it directly
 	if len(handlers) == 1 {
 		return handlers[0]
 	}
 
-	// Fall back to the default handler
 	return httpChallengeProvider
 }
 
-// compositeHTTPChallengeHandler tries multiple HTTP challenge handlers.
+// compositeHTTPChallengeHandler tries handlers in order until one responds with 200.
 type compositeHTTPChallengeHandler struct {
 	handlers []http.Handler
 	fallback http.Handler
 }
 
 func (c *compositeHTTPChallengeHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	// Try each handler - the first one that can serve the challenge will respond
-	// This is handled by the individual handlers checking their tokens
 	for _, h := range c.handlers {
-		// Create a response recorder to check if handler can serve
-		// The recorder buffers the response so we can try multiple handlers
 		rec := &responseRecorder{ResponseWriter: rw, statusCode: http.StatusNotFound}
 		h.ServeHTTP(rec, req)
 		if rec.statusCode == http.StatusOK {
-			// This handler successfully served the challenge - flush its response
 			rec.flush()
 			return
 		}
 	}
 
-	// If no handler could serve, use fallback
 	if c.fallback != nil {
 		c.fallback.ServeHTTP(rw, req)
 	} else {
-		// No handler could serve and no fallback - return 404
 		rw.WriteHeader(http.StatusNotFound)
 	}
 }
 
-// responseRecorder captures the status code from a handler and buffers the response.
-// This allows us to check if a handler successfully served a challenge before
-// committing the response to the client.
+// responseRecorder buffers the response to allow trying multiple handlers.
 type responseRecorder struct {
 	http.ResponseWriter
 
@@ -467,7 +454,6 @@ func (r *responseRecorder) WriteHeader(statusCode int) {
 	if !r.written {
 		r.statusCode = statusCode
 		r.written = true
-		// Don't write to underlying ResponseWriter yet - buffer until we know this is the right handler
 	}
 }
 
@@ -476,7 +462,6 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 		r.statusCode = http.StatusOK
 		r.written = true
 	}
-	// Buffer the body instead of writing directly
 	r.body = append(r.body, b...)
 	return len(b), nil
 }
@@ -540,7 +525,7 @@ func switchRouter(routerFactory *server.RouterFactory, serverEntryPointsTCP serv
 func initACMEProvider(c *static.Configuration, providerAggregator *aggregator.ProviderAggregator, tlsManager *traefiktls.Manager, httpChallengeProvider, tlsChallengeProvider challenge.Provider, routinesPool *safe.Pool) []*acme.Provider {
 	localStores := map[string]*acme.LocalStore{}
 	kvStores := map[string]acme.Store{}
-	distributedHTTPChallenges := map[string]*acme.DistributedChallengeHTTP{}
+	resilientChallenges := map[string]*acme.ResilientChallengeHTTP{}
 
 	var resolvers []*acme.Provider
 	for name, resolver := range c.CertificatesResolvers {
@@ -552,79 +537,33 @@ func initACMEProvider(c *static.Configuration, providerAggregator *aggregator.Pr
 		httpChallenge := httpChallengeProvider
 		ctx := context.Background()
 
-		// Check if a distributed KV store is configured
-		switch {
-		case resolver.ACME.Redis != nil:
-			// Use Redis for distributed storage
-			storeKey := "redis:" + resolver.ACME.Redis.Prefix
-			if existing, ok := kvStores[storeKey]; ok {
-				store = existing
-				if distHTTP, ok := distributedHTTPChallenges[storeKey]; ok {
-					httpChallenge = distHTTP
-				}
-			} else {
-				kvStore, err := acme.NewRedisStore(ctx, resolver.ACME.Redis)
-				if err != nil {
-					log.Error().Err(err).Str("resolver", name).Msg("Failed to create Redis ACME store, falling back to local storage")
-				} else {
-					store = kvStore
-					kvStores[storeKey] = kvStore
-					// Create distributed HTTP challenge provider using the same KV client
-					distHTTP := acme.NewDistributedChallengeHTTP(kvStore.Client(), resolver.ACME.Redis.Prefix+"/challenges")
-					distributedHTTPChallenges[storeKey] = distHTTP
-					httpChallenge = distHTTP
-					log.Info().Str("resolver", name).Msg("Using Redis for distributed ACME certificate storage and HTTP challenges")
-				}
-			}
-
-		case resolver.ACME.Consul != nil:
-			// Use Consul for distributed storage
-			storeKey := "consul:" + resolver.ACME.Consul.Prefix
-			if existing, ok := kvStores[storeKey]; ok {
-				store = existing
-				if distHTTP, ok := distributedHTTPChallenges[storeKey]; ok {
-					httpChallenge = distHTTP
-				}
-			} else {
-				kvStore, err := acme.NewConsulStore(ctx, resolver.ACME.Consul)
-				if err != nil {
-					log.Error().Err(err).Str("resolver", name).Msg("Failed to create Consul ACME store, falling back to local storage")
-				} else {
-					store = kvStore
-					kvStores[storeKey] = kvStore
-					// Create distributed HTTP challenge provider using the same KV client
-					distHTTP := acme.NewDistributedChallengeHTTP(kvStore.Client(), resolver.ACME.Consul.Prefix+"/challenges")
-					distributedHTTPChallenges[storeKey] = distHTTP
-					httpChallenge = distHTTP
-					log.Info().Str("resolver", name).Msg("Using Consul for distributed ACME certificate storage and HTTP challenges")
-				}
-			}
-
-		case resolver.ACME.Etcd != nil:
-			// Use etcd for distributed storage
+		// Use resilient etcd storage when configured: connects in the background
+		// with immediate first attempt, serves reads from local fallback while
+		// disconnected, and mirrors all writes to keep the local cache warm.
+		if resolver.ACME.Etcd != nil {
 			storeKey := "etcd:" + resolver.ACME.Etcd.Prefix
 			if existing, ok := kvStores[storeKey]; ok {
 				store = existing
-				if distHTTP, ok := distributedHTTPChallenges[storeKey]; ok {
-					httpChallenge = distHTTP
+				if rc, ok := resilientChallenges[storeKey]; ok {
+					httpChallenge = rc
 				}
 			} else {
-				kvStore, err := acme.NewEtcdStore(ctx, resolver.ACME.Etcd)
-				if err != nil {
-					log.Error().Err(err).Str("resolver", name).Msg("Failed to create etcd ACME store, falling back to local storage")
-				} else {
-					store = kvStore
-					kvStores[storeKey] = kvStore
-					// Create distributed HTTP challenge provider using the same KV client
-					distHTTP := acme.NewDistributedChallengeHTTP(kvStore.Client(), resolver.ACME.Etcd.Prefix+"/challenges")
-					distributedHTTPChallenges[storeKey] = distHTTP
-					httpChallenge = distHTTP
-					log.Info().Str("resolver", name).Msg("Using etcd for distributed ACME certificate storage and HTTP challenges")
+				if localStores[resolver.ACME.Storage] == nil {
+					localStores[resolver.ACME.Storage] = acme.NewLocalStore(resolver.ACME.Storage, routinesPool)
 				}
+				etcdCfg := resolver.ACME.Etcd
+				resilientChallenge := acme.NewResilientChallengeHTTP(httpChallengeProvider.(*acme.ChallengeHTTP))
+				store = acme.NewResilientStore(ctx, localStores[resolver.ACME.Storage], func(retryCtx context.Context) (*acme.KVStore, error) {
+					return acme.NewEtcdStore(retryCtx, etcdCfg)
+				}, resilientChallenge, etcdCfg.Prefix+"/challenges")
+				kvStores[storeKey] = store
+				resilientChallenges[storeKey] = resilientChallenge
+				httpChallenge = resilientChallenge
+				log.Info().Str("resolver", name).Msg("Using resilient etcd storage with local fallback for ACME certificates")
 			}
 		}
 
-		// Fall back to local file storage if no KV store configured or if KV store creation failed
+		// Fall back to local file storage only when no KV store is configured at all
 		if store == nil {
 			if localStores[resolver.ACME.Storage] == nil {
 				localStores[resolver.ACME.Storage] = acme.NewLocalStore(resolver.ACME.Storage, routinesPool)
