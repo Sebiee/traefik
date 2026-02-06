@@ -19,6 +19,16 @@ LINT_EXECUTABLES = misspell shellcheck
 
 DOCKER_BUILD_PLATFORMS ?= linux/amd64,linux/arm64
 
+# Use gotestsum for automatic retries of flaky tests.
+# Set GOTESTSUM=1 to enable (requires gotestsum in PATH).
+# --rerun-fails=2: rerun each failed test up to 2 extra times.
+# --rerun-fails-max-failures=10: skip reruns if >10 tests fail (likely a real issue).
+ifdef GOTESTSUM
+GOTEST := gotestsum --rerun-fails=2 --rerun-fails-max-failures=5 --
+else
+GOTEST := go test
+endif
+
 .PHONY: default
 #? default: Run `make generate` and `make binary`
 default: generate binary
@@ -92,12 +102,12 @@ test: test-ui-unit test-unit test-integration
 .PHONY: test-unit
 #? test-unit: Run the unit tests
 test-unit:
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go test -cover "-coverprofile=cover.out" -v $(TESTFLAGS) ./pkg/... ./cmd/...
+	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GOTEST) -cover "-coverprofile=cover.out" -v $(TESTFLAGS) ./pkg/... ./cmd/...
 
 .PHONY: test-integration
 #? test-integration: Run the integration tests
 test-integration:
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go test ./integration -test.timeout=20m -failfast -v $(TESTFLAGS)
+	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GOTEST) ./integration -test.timeout=20m -failfast -v $(TESTFLAGS)
 
 .PHONY: test-gateway-api-conformance
 #? test-gateway-api-conformance: Run the Gateway API conformance tests
