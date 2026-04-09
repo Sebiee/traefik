@@ -210,7 +210,7 @@ func (s *AcmeEtcdSuite) TestAccountPersistenceInEtcd() {
 
 	// Verify account is stored in etcd
 	ctx := context.Background()
-	pair, err := s.kvClient.Get(ctx, "traefik/acme/data/default", nil)
+	pair, err := s.kvClient.Get(ctx, "traefik/acme/default/data", nil)
 	require.NoError(s.T(), err)
 	require.NotNil(s.T(), pair)
 	require.NotEmpty(s.T(), pair.Value)
@@ -393,7 +393,7 @@ func (s *AcmeEtcdSuite) retrieveAcmeCertificateWithEtcd(testCase acmeEtcdTestCas
 // verifyCertificateStoredInEtcd checks that certificate data exists in etcd.
 func (s *AcmeEtcdSuite) verifyCertificateStoredInEtcd(resolverName, expectedDomain string) {
 	ctx := context.Background()
-	key := fmt.Sprintf("traefik/acme/data/%s", resolverName)
+	key := fmt.Sprintf("traefik/acme/%s/data", resolverName)
 
 	// Wait for data containing the expected domain to appear - CI can be slow
 	err := try.Do(60*time.Second, func() error {

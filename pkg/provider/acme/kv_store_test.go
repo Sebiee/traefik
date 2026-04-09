@@ -174,7 +174,8 @@ func TestKVStore_AcquireLock_Success(t *testing.T) {
 		prefix:      "test/prefix",
 		lockTimeout: 30 * time.Second,
 		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 	}
 
 	locker, err := kvStore.AcquireLock(t.Context(), "myresolver", "example.com")
@@ -196,7 +197,8 @@ func TestKVStore_AcquireLock_Failure(t *testing.T) {
 		prefix:      "test/prefix",
 		lockTimeout: 30 * time.Second,
 		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 	}
 
 	locker, err := kvStore.AcquireLock(t.Context(), "myresolver", "example.com")
@@ -219,7 +221,8 @@ func TestKVStore_AcquireLock_LockContention(t *testing.T) {
 		prefix:      "test/prefix",
 		lockTimeout: 30 * time.Second,
 		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 	}
 
 	locker, err := kvStore.AcquireLock(t.Context(), "myresolver", "example.com")
@@ -239,7 +242,8 @@ func TestKVStore_ReleaseLock_Success(t *testing.T) {
 		prefix:      "test/prefix",
 		lockTimeout: 30 * time.Second,
 		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 		lock:        sync.RWMutex{},
 	}
 
@@ -258,7 +262,8 @@ func TestKVStore_ReleaseLock_NoExistingLock(t *testing.T) {
 		prefix:      "test/prefix",
 		lockTimeout: 30 * time.Second,
 		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 		lock:        sync.RWMutex{},
 	}
 
@@ -276,7 +281,8 @@ func TestKVStore_ReleaseLock_UnlockFailure(t *testing.T) {
 		prefix:      "test/prefix",
 		lockTimeout: 30 * time.Second,
 		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 		lock:        sync.RWMutex{},
 	}
 
@@ -300,7 +306,8 @@ func TestKVStore_DoubleReleaseLock_Idempotent(t *testing.T) {
 		prefix:      "test/prefix",
 		lockTimeout: 30 * time.Second,
 		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 		lock:        sync.RWMutex{},
 	}
 
@@ -353,7 +360,8 @@ func TestKVStore_ConcurrentLockOperations(t *testing.T) {
 		prefix:      "test/prefix",
 		lockTimeout: 30 * time.Second,
 		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 		lock:        sync.RWMutex{},
 	}
 

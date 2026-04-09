@@ -26,6 +26,7 @@ import (
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/providers/dns"
 	"github.com/go-acme/lego/v4/registration"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	ptypes "github.com/traefik/paerser/types"
 	"github.com/traefik/traefik/v3/pkg/config/dynamic"
@@ -775,58 +776,86 @@ func (p *Provider) watchDistributedStore(ctx context.Context, pool *safe.Pool) {
 		return
 	}
 
-	logger := log.Ctx(ctx)
-
-	updates, err := ds.Watch(ctx, p.ResolverName)
-	if err != nil {
-		logger.Warn().Err(err).Msg("Failed to watch distributed store for certificate updates")
-		return
-	}
+	logger := *log.Ctx(ctx)
 
 	pool.GoCtx(func(ctxPool context.Context) {
+		retryInterval := 5 * time.Second
+		maxRetryInterval := 5 * time.Minute
+
 		for {
+			updates, err := ds.Watch(ctxPool, p.ResolverName)
+			if err != nil {
+				logger.Warn().Err(err).Dur("retryIn", retryInterval).
+					Msg("Failed to watch distributed store for certificate updates, will retry")
+				select {
+				case <-ctxPool.Done():
+					return
+				case <-time.After(retryInterval):
+				}
+				retryInterval = min(retryInterval*2, maxRetryInterval)
+				continue
+			}
+			// Reset backoff on successful watch
+			retryInterval = 5 * time.Second
+			logger.Info().Msg("Distributed store watch established")
+
+			p.consumeDistributedUpdates(ctxPool, updates, logger)
+
+			// If consumeDistributedUpdates returned, the watch channel was closed.
+			// Retry the watch unless the context is done.
 			select {
 			case <-ctxPool.Done():
 				return
-			case _, ok := <-updates:
-				if !ok {
-					logger.Warn().Msg("Distributed store watch channel closed")
-					return
-				}
-
-				// Refresh certificates from the distributed store
-				freshCerts, err := p.Store.GetCertificates(p.ResolverName)
-				if err != nil {
-					logger.Warn().Err(err).Msg("Failed to refresh certificates from distributed store")
-					continue
-				}
-
-				p.certificatesMu.Lock()
-				p.certificates = freshCerts
-				p.certificatesMu.Unlock()
-
-				// Notify configuration channel with updated certificates
-				p.configurationChan <- p.buildMessage()
-				logger.Debug().Msg("Refreshed certificates from distributed store")
-
-				// Re-send the last dynamic configuration to trigger
-				// resolveNewCertificates for any domains that were waiting
-				// for the KV backend to come online. This bypasses the
-				// server's config deduplication.
-				p.lastConfigMu.RLock()
-				cfg := p.lastConfig
-				p.lastConfigMu.RUnlock()
-
-				if cfg != nil {
-					select {
-					case p.configFromListenerChan <- *cfg:
-						logger.Debug().Msg("Re-triggered domain resolution after distributed store update")
-					default:
-					}
-				}
+			default:
+				logger.Warn().Msg("Distributed store watch channel closed, reconnecting")
 			}
 		}
 	})
+}
+
+// consumeDistributedUpdates processes certificate update notifications from the distributed store watch channel.
+func (p *Provider) consumeDistributedUpdates(ctx context.Context, updates <-chan struct{}, logger zerolog.Logger) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-updates:
+			if !ok {
+				return
+			}
+
+			// Refresh certificates from the distributed store
+			freshCerts, err := p.Store.GetCertificates(p.ResolverName)
+			if err != nil {
+				logger.Warn().Err(err).Msg("Failed to refresh certificates from distributed store")
+				continue
+			}
+
+			p.certificatesMu.Lock()
+			p.certificates = freshCerts
+			p.certificatesMu.Unlock()
+
+			// Notify configuration channel with updated certificates
+			p.configurationChan <- p.buildMessage()
+			logger.Debug().Msg("Refreshed certificates from distributed store")
+
+			// Re-send the last dynamic configuration to trigger
+			// resolveNewCertificates for any domains that were waiting
+			// for the KV backend to come online. This bypasses the
+			// server's config deduplication.
+			p.lastConfigMu.RLock()
+			cfg := p.lastConfig
+			p.lastConfigMu.RUnlock()
+
+			if cfg != nil {
+				select {
+				case p.configFromListenerChan <- *cfg:
+					logger.Debug().Msg("Re-triggered domain resolution after distributed store update")
+				default:
+				}
+			}
+		}
+	}
 }
 
 func (p *Provider) resolveCertificate(ctx context.Context, domain types.Domain, tlsStore string) (types.Domain, *certificate.Resource, error) {
@@ -859,9 +888,8 @@ func (p *Provider) resolveCertificate(ctx context.Context, domain types.Domain, 
 		// so even if a replica crashes while holding the lock, it will auto-release.
 		lockCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		_, err := distStore.AcquireLock(lockCtx, p.ResolverName, domainKey)
-		cancel()
-
 		if err != nil {
+			cancel()
 			// Lock acquisition failed - don't proceed with certificate request.
 			// This prevents thundering herd: other replicas should wait or use cached certs.
 			logger.Warn().Err(err).Msgf("Failed to acquire distributed lock for %v, skipping certificate request", uncheckedDomains)
@@ -871,6 +899,9 @@ func (p *Provider) resolveCertificate(ctx context.Context, domain types.Domain, 
 
 		logger.Debug().Str("domainKey", domainKey).Msg("Acquired distributed lock")
 
+		// cancel() must be deferred AFTER ReleaseLock to keep the lock context alive
+		// during certificate operations. Canceling early destroys the lock session.
+		defer cancel()
 		defer func() {
 			if err := distStore.ReleaseLock(p.ResolverName, domainKey); err != nil {
 				logger.Warn().Err(err).Msg("Failed to release distributed lock")

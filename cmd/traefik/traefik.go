@@ -541,7 +541,7 @@ func initACMEProvider(c *static.Configuration, providerAggregator *aggregator.Pr
 		// with immediate first attempt, serves reads from local fallback while
 		// disconnected, and mirrors all writes to keep the local cache warm.
 		if resolver.ACME.Etcd != nil {
-			storeKey := "etcd:" + resolver.ACME.Etcd.Prefix
+			storeKey := "etcd:" + resolver.ACME.Etcd.Prefix + "/" + name
 			if existing, ok := kvStores[storeKey]; ok {
 				store = existing
 				if rc, ok := resilientChallenges[storeKey]; ok {
@@ -555,7 +555,7 @@ func initACMEProvider(c *static.Configuration, providerAggregator *aggregator.Pr
 				resilientChallenge := acme.NewResilientChallengeHTTP(httpChallengeProvider.(*acme.ChallengeHTTP))
 				store = acme.NewResilientStore(ctx, localStores[resolver.ACME.Storage], func(retryCtx context.Context) (*acme.KVStore, error) {
 					return acme.NewEtcdStore(retryCtx, etcdCfg)
-				}, resilientChallenge, etcdCfg.Prefix+"/challenges")
+				}, resilientChallenge, etcdCfg.Prefix+"/"+name+"/challenges")
 				kvStores[storeKey] = store
 				resilientChallenges[storeKey] = resilientChallenge
 				httpChallenge = resilientChallenge

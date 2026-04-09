@@ -932,7 +932,7 @@ func (s *AcmeEtcdResilienceSuite) TestNewCertificateAfterEtcdRecovery() {
 
 	// Phase 5: Verify certificates are stored in etcd
 	s.T().Log("Phase 5: Verifying certificates are stored in etcd...")
-	pair, err := s.kvClient.Get(ctx, "traefik/acme/data/default", nil)
+	pair, err := s.kvClient.Get(ctx, "traefik/acme/default/data", nil)
 	require.NoError(s.T(), err, "Certificate data should be stored in etcd")
 	require.NotNil(s.T(), pair)
 	require.NotEmpty(s.T(), pair.Value)
