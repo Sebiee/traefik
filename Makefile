@@ -108,7 +108,7 @@ endif
 #? test-integration: Run the integration tests
 test-integration:
 ifdef GOTESTSUM
-	GOOS=$(GOOS) GOARCH=$(GOARCH) gotestsum --rerun-fails=2 --rerun-fails-max-failures=5 --packages="./integration" -- -test.timeout=20m -failfast -v $(TESTFLAGS)
+	GOOS=$(GOOS) GOARCH=$(GOARCH) gotestsum --rerun-fails=2 --rerun-fails-max-failures=5 --packages="./integration" -- -test.timeout=20m -v $(TESTFLAGS)
 else
 	GOOS=$(GOOS) GOARCH=$(GOARCH) go test ./integration -test.timeout=20m -failfast -v $(TESTFLAGS)
 endif
