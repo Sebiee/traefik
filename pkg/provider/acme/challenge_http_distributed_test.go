@@ -301,13 +301,13 @@ func TestDistributedChallengeHTTP_ThreadSafety(t *testing.T) {
 
 func TestChallengeKey(t *testing.T) {
 	mockStore := newMockKVStore()
-	prefix := "traefik/acme/challenges"
+	prefix := "traefik/acme/myresolver/challenges"
 
 	distChallenge := NewDistributedChallengeHTTP(mockStore, prefix)
 
-	// Verify the challenge key doesn't have double /challenges/
+	// Verify the challenge key is correctly namespaced under the resolver
 	key := distChallenge.challengeKey("mytoken", "example.com")
-	expected := "traefik/acme/challenges/mytoken/example.com"
+	expected := "traefik/acme/myresolver/challenges/mytoken/example.com"
 	assert.Equal(t, expected, key)
 
 	// Ensure there's no double challenges in the path

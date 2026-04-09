@@ -170,11 +170,12 @@ func TestKVStore_AcquireLock_Success(t *testing.T) {
 	mockLocker.On("Lock", mock.Anything).Return((<-chan struct{})(lockChan), nil)
 
 	kvStore := &KVStore{
-		kvClient:    mockClient,
-		prefix:      "test/prefix",
-		lockTimeout: 30 * time.Second,
-		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		kvClient:     mockClient,
+		prefix:       "test/prefix",
+		lockTimeout:  30 * time.Second,
+		storedData:   make(map[string]*StoredData),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 	}
 
 	locker, err := kvStore.AcquireLock(t.Context(), "myresolver", "example.com")
@@ -192,11 +193,12 @@ func TestKVStore_AcquireLock_Failure(t *testing.T) {
 		Return(nil, errors.New("connection refused"))
 
 	kvStore := &KVStore{
-		kvClient:    mockClient,
-		prefix:      "test/prefix",
-		lockTimeout: 30 * time.Second,
-		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		kvClient:     mockClient,
+		prefix:       "test/prefix",
+		lockTimeout:  30 * time.Second,
+		storedData:   make(map[string]*StoredData),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 	}
 
 	locker, err := kvStore.AcquireLock(t.Context(), "myresolver", "example.com")
@@ -215,11 +217,12 @@ func TestKVStore_AcquireLock_LockContention(t *testing.T) {
 	mockLocker.On("Lock", mock.Anything).Return(nil, errors.New("lock already held"))
 
 	kvStore := &KVStore{
-		kvClient:    mockClient,
-		prefix:      "test/prefix",
-		lockTimeout: 30 * time.Second,
-		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		kvClient:     mockClient,
+		prefix:       "test/prefix",
+		lockTimeout:  30 * time.Second,
+		storedData:   make(map[string]*StoredData),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 	}
 
 	locker, err := kvStore.AcquireLock(t.Context(), "myresolver", "example.com")
@@ -236,11 +239,12 @@ func TestKVStore_ReleaseLock_Success(t *testing.T) {
 	mockLocker.On("Unlock", mock.Anything).Return(nil)
 
 	kvStore := &KVStore{
-		prefix:      "test/prefix",
-		lockTimeout: 30 * time.Second,
-		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
-		lock:        sync.RWMutex{},
+		prefix:       "test/prefix",
+		lockTimeout:  30 * time.Second,
+		storedData:   make(map[string]*StoredData),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
+		lock:         sync.RWMutex{},
 	}
 
 	// Add a lock to release (key is resolver/domain)
@@ -255,11 +259,12 @@ func TestKVStore_ReleaseLock_Success(t *testing.T) {
 
 func TestKVStore_ReleaseLock_NoExistingLock(t *testing.T) {
 	kvStore := &KVStore{
-		prefix:      "test/prefix",
-		lockTimeout: 30 * time.Second,
-		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
-		lock:        sync.RWMutex{},
+		prefix:       "test/prefix",
+		lockTimeout:  30 * time.Second,
+		storedData:   make(map[string]*StoredData),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
+		lock:         sync.RWMutex{},
 	}
 
 	// No lock exists - should return nil (graceful handling)
@@ -273,11 +278,12 @@ func TestKVStore_ReleaseLock_UnlockFailure(t *testing.T) {
 	mockLocker.On("Unlock", mock.Anything).Return(errors.New("unlock failed"))
 
 	kvStore := &KVStore{
-		prefix:      "test/prefix",
-		lockTimeout: 30 * time.Second,
-		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
-		lock:        sync.RWMutex{},
+		prefix:       "test/prefix",
+		lockTimeout:  30 * time.Second,
+		storedData:   make(map[string]*StoredData),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
+		lock:         sync.RWMutex{},
 	}
 
 	// Add a lock to release (key is resolver/domain)
@@ -297,11 +303,12 @@ func TestKVStore_DoubleReleaseLock_Idempotent(t *testing.T) {
 	mockLocker.On("Unlock", mock.Anything).Return(nil).Once()
 
 	kvStore := &KVStore{
-		prefix:      "test/prefix",
-		lockTimeout: 30 * time.Second,
-		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
-		lock:        sync.RWMutex{},
+		prefix:       "test/prefix",
+		lockTimeout:  30 * time.Second,
+		storedData:   make(map[string]*StoredData),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
+		lock:         sync.RWMutex{},
 	}
 
 	// Add a lock to release (key is resolver/domain)
@@ -350,11 +357,12 @@ func TestKVStore_LockTimeout_Configuration(t *testing.T) {
 
 func TestKVStore_ConcurrentLockOperations(t *testing.T) {
 	kvStore := &KVStore{
-		prefix:      "test/prefix",
-		lockTimeout: 30 * time.Second,
-		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
-		lock:        sync.RWMutex{},
+		prefix:       "test/prefix",
+		lockTimeout:  30 * time.Second,
+		storedData:   make(map[string]*StoredData),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
+		lock:         sync.RWMutex{},
 	}
 
 	// Test concurrent release lock operations don't panic

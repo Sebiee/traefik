@@ -89,6 +89,9 @@ jobs:
             ~/.cache/go-build
           key: ${{ runner.os }}-go-build-cache-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
 
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@latest
+
       - name: Generate go test Slice
         id: test_split
         uses: hashicorp-forge/go-test-split-action@v2.0.0
@@ -100,4 +103,4 @@ jobs:
       - name: Run Integration tests
         run: |
           TESTS=$(echo "${{ steps.test_split.outputs.run}}" | sed 's/\$/\$\$/g')
-          TESTFLAGS="-run \"${TESTS}\"" make test-integration
+          TESTFLAGS="-run \"${TESTS}\"" GOTESTSUM=1 make test-integration

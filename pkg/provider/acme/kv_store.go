@@ -52,7 +52,8 @@ type KVStore struct {
 	lock       sync.RWMutex
 	storedData map[string]*StoredData
 
-	locks map[string]store.Locker // active distributed locks by resolver/domain
+	locks        map[string]store.Locker       // active distributed locks by resolver/domain
+	lockMonitors map[string]context.CancelFunc // cancel funcs for lock-loss monitor goroutines
 }
 
 // NewKVStore creates a new KVStore with the given configuration.
@@ -74,11 +75,12 @@ func NewKVStore(ctx context.Context, storeType string, config valkeyrie.Config, 
 	logger.Info().Msgf("Connected to KV store at %v with prefix %s", kvConfig.Endpoints, kvConfig.Prefix)
 
 	return &KVStore{
-		kvClient:    kvClient,
-		prefix:      kvConfig.Prefix,
-		lockTimeout: kvConfig.LockTimeout,
-		storedData:  make(map[string]*StoredData),
-		locks:       make(map[string]store.Locker),
+		kvClient:     kvClient,
+		prefix:       kvConfig.Prefix,
+		lockTimeout:  kvConfig.LockTimeout,
+		storedData:   make(map[string]*StoredData),
+		locks:        make(map[string]store.Locker),
+		lockMonitors: make(map[string]context.CancelFunc),
 	}, nil
 }
 
@@ -155,7 +157,10 @@ func (s *KVStore) AcquireLock(ctx context.Context, resolverName, domain string) 
 
 	lockKey := fmt.Sprintf("%s/%s/locks/%s", s.prefix, resolverName, domain)
 
-	locker, err := s.kvClient.NewLock(ctx, lockKey, &store.LockOptions{
+	// Use a background context for the lock lifecycle so that the lock session
+	// (and its TTL renewal) survives independently of the caller's context.
+	// The caller's context is only used for the acquisition timeout below.
+	locker, err := s.kvClient.NewLock(context.Background(), lockKey, &store.LockOptions{
 		TTL: s.lockTimeout,
 	})
 	if err != nil {
@@ -171,21 +176,30 @@ func (s *KVStore) AcquireLock(ctx context.Context, resolverName, domain string) 
 		return nil, fmt.Errorf("failed to acquire lock for domain %s: %w", domain, err)
 	}
 
-	// Start a goroutine to monitor lock loss
+	lockMapKey := fmt.Sprintf("%s/%s", resolverName, domain)
+	logger.Debug().Str("resolver", resolverName).Str("domain", domain).Msg("Acquired distributed lock")
+
+	// Monitor for unexpected lock loss (e.g. etcd TTL expiry, connection drop).
+	// A cancel func is stored alongside the locker so that ReleaseLock can
+	// stop the goroutine on normal unlock — without it the goroutine would
+	// fire a spurious "Lost distributed lock" warning on every release.
+	monitorCtx, monitorCancel := context.WithCancel(ctx)
+
 	go func() {
 		select {
 		case <-lockChan:
-			logger.Warn().Str("resolver", resolverName).Str("domain", domain).Msg("Lost distributed lock")
-		case <-ctx.Done():
+			// Only warn if the monitor wasn't canceled by a normal ReleaseLock.
+			if monitorCtx.Err() == nil {
+				logger.Warn().Str("resolver", resolverName).Str("domain", domain).Msg("Lost distributed lock")
+			}
+		case <-monitorCtx.Done():
 			return
 		}
 	}()
 
-	lockMapKey := fmt.Sprintf("%s/%s", resolverName, domain)
-	logger.Debug().Str("resolver", resolverName).Str("domain", domain).Msg("Acquired distributed lock")
-
 	s.lock.Lock()
 	s.locks[lockMapKey] = locker
+	s.lockMonitors[lockMapKey] = monitorCancel
 	s.lock.Unlock()
 
 	return locker, nil
@@ -199,6 +213,12 @@ func (s *KVStore) ReleaseLock(resolverName, domain string) error {
 	locker, exists := s.locks[lockMapKey]
 	if exists {
 		delete(s.locks, lockMapKey)
+	}
+	// Cancel the monitor goroutine BEFORE unlocking so it doesn't
+	// fire a spurious "Lost distributed lock" warning.
+	if cancel, ok := s.lockMonitors[lockMapKey]; ok {
+		cancel()
+		delete(s.lockMonitors, lockMapKey)
 	}
 	s.lock.Unlock()
 
@@ -218,7 +238,29 @@ func (s *KVStore) ReleaseLock(resolverName, domain string) error {
 func (s *KVStore) Watch(ctx context.Context, resolverName string) (<-chan struct{}, error) {
 	logger := log.With().Str(logs.ProviderName, "acme-kv").Logger()
 
-	key := fmt.Sprintf("%s/data/%s", s.prefix, resolverName)
+	key := fmt.Sprintf("%s/%s/data", s.prefix, resolverName)
+
+	// Ensure the key exists before watching. Some KV backends (e.g. etcd)
+	// return "key not found" when watching a non-existent key.
+	_, err := s.kvClient.Get(ctx, key, nil)
+	if err != nil {
+		if errors.Is(err, store.ErrKeyNotFound) {
+			emptyData, marshalErr := json.Marshal(&StoredData{})
+			if marshalErr != nil {
+				return nil, fmt.Errorf("failed to marshal initial ACME data: %w", marshalErr)
+			}
+			compressed, compressErr := compress(emptyData)
+			if compressErr != nil {
+				return nil, fmt.Errorf("failed to compress initial ACME data: %w", compressErr)
+			}
+			if putErr := s.kvClient.Put(ctx, key, compressed, nil); putErr != nil {
+				return nil, fmt.Errorf("failed to initialize KV store key for watch: %w", putErr)
+			}
+			logger.Debug().Str("resolver", resolverName).Msg("Initialized empty ACME data key for watch")
+		} else {
+			return nil, fmt.Errorf("failed to check KV store key before watch: %w", err)
+		}
+	}
 
 	events, err := s.kvClient.Watch(ctx, key, nil)
 	if err != nil {
@@ -279,7 +321,7 @@ func (s *KVStore) getUnsafe(resolverName string) (*StoredData, error) {
 		return cached, nil
 	}
 
-	key := fmt.Sprintf("%s/data/%s", s.prefix, resolverName)
+	key := fmt.Sprintf("%s/%s/data", s.prefix, resolverName)
 
 	pair, err := s.kvClient.Get(ctx, key, nil)
 	if err != nil {
@@ -333,7 +375,7 @@ func (s *KVStore) saveUnsafe(resolverName string, storedData *StoredData) error 
 		return fmt.Errorf("failed to compress ACME data: %w", err)
 	}
 
-	key := fmt.Sprintf("%s/data/%s", s.prefix, resolverName)
+	key := fmt.Sprintf("%s/%s/data", s.prefix, resolverName)
 
 	if err := s.kvClient.Put(ctx, key, compressed, nil); err != nil {
 		return fmt.Errorf("failed to save ACME data to KV store: %w", err)
