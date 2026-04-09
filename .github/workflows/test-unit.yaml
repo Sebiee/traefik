@@ -62,7 +62,7 @@ jobs:
 
       - name: Tests
         run: |
-          gotestsum --rerun-fails=2 --rerun-fails-max-failures=5 -- -v -parallel 2 ${{ matrix.package.group }}
+          gotestsum --rerun-fails=2 --rerun-fails-max-failures=5 --packages="${{ matrix.package.group }}" -- -v -parallel 2
 
   test-ui-unit:
     runs-on: ubuntu-latest
