@@ -256,7 +256,7 @@ func TestAcquireReleaseLock_MonitorDetectsRealLockLoss(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// The monitor goroutine should have logged the warning because
-	// monitorCtx was NOT cancelled (ReleaseLock was not called).
+	// monitorCtx was NOT canceled (ReleaseLock was not called).
 	// We can't easily assert on log output, but we verify the goroutine
 	// ran by checking that the lock state is still in the map (ReleaseLock
 	// was never called, so it should still be there).
@@ -267,7 +267,7 @@ func TestAcquireReleaseLock_MonitorDetectsRealLockLoss(t *testing.T) {
 }
 
 func TestReleaseLock_CancelsMonitorBeforeUnlock(t *testing.T) {
-	// This test verifies the ordering: monitor must be cancelled BEFORE
+	// This test verifies the ordering: monitor must be canceled BEFORE
 	// the locker is unlocked. If order is reversed, the goroutine would
 	// see the closed channel before the cancel and fire a false alarm.
 
@@ -573,7 +573,7 @@ func TestAcquireReleaseLock_FullLifecycle(t *testing.T) {
 	// All locks and monitors must be cleaned up
 	kvStore.lock.RLock()
 	assert.Empty(t, kvStore.locks, "all locks should be released")
-	assert.Empty(t, kvStore.lockMonitors, "all monitors should be cancelled")
+	assert.Empty(t, kvStore.lockMonitors, "all monitors should be canceled")
 	kvStore.lock.RUnlock()
 
 	// Give goroutines time to exit

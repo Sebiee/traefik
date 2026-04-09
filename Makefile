@@ -22,12 +22,8 @@ DOCKER_BUILD_PLATFORMS ?= linux/amd64,linux/arm64
 # Use gotestsum for automatic retries of flaky tests.
 # Set GOTESTSUM=1 to enable (requires gotestsum in PATH).
 # --rerun-fails=2: rerun each failed test up to 2 extra times.
-# --rerun-fails-max-failures=10: skip reruns if >10 tests fail (likely a real issue).
-ifdef GOTESTSUM
-GOTEST := gotestsum --rerun-fails=2 --rerun-fails-max-failures=5 --
-else
-GOTEST := go test
-endif
+# --rerun-fails-max-failures=5: skip reruns if >5 tests fail (likely a real issue).
+# When --rerun-fails is used with go test args, packages must be specified via --packages.
 
 .PHONY: default
 #? default: Run `make generate` and `make binary`
@@ -102,12 +98,20 @@ test: test-ui-unit test-unit test-integration
 .PHONY: test-unit
 #? test-unit: Run the unit tests
 test-unit:
-	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GOTEST) -cover "-coverprofile=cover.out" -v $(TESTFLAGS) ./pkg/... ./cmd/...
+ifdef GOTESTSUM
+	GOOS=$(GOOS) GOARCH=$(GOARCH) gotestsum --rerun-fails=2 --rerun-fails-max-failures=5 --packages="./pkg/... ./cmd/..." -- -cover "-coverprofile=cover.out" -v $(TESTFLAGS)
+else
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go test -cover "-coverprofile=cover.out" -v $(TESTFLAGS) ./pkg/... ./cmd/...
+endif
 
 .PHONY: test-integration
 #? test-integration: Run the integration tests
 test-integration:
-	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GOTEST) ./integration -test.timeout=20m -failfast -v $(TESTFLAGS)
+ifdef GOTESTSUM
+	GOOS=$(GOOS) GOARCH=$(GOARCH) gotestsum --rerun-fails=2 --rerun-fails-max-failures=5 --packages="./integration" -- -test.timeout=20m -failfast -v $(TESTFLAGS)
+else
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go test ./integration -test.timeout=20m -failfast -v $(TESTFLAGS)
+endif
 
 .PHONY: test-gateway-api-conformance
 #? test-gateway-api-conformance: Run the Gateway API conformance tests

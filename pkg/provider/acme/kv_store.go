@@ -188,7 +188,7 @@ func (s *KVStore) AcquireLock(ctx context.Context, resolverName, domain string) 
 	go func() {
 		select {
 		case <-lockChan:
-			// Only warn if the monitor wasn't cancelled by a normal ReleaseLock.
+			// Only warn if the monitor wasn't canceled by a normal ReleaseLock.
 			if monitorCtx.Err() == nil {
 				logger.Warn().Str("resolver", resolverName).Str("domain", domain).Msg("Lost distributed lock")
 			}
